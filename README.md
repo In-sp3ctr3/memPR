@@ -121,19 +121,31 @@ MemPR answers: can this memory write be trusted, reviewed, scoped, and reversed?
 
 The smallest useful version should provide:
 
-- `mempr propose`: create a memory change request
-- `mempr list`: show pending, accepted, and rejected memory changes
-- `mempr accept`: approve a proposed memory
-- `mempr reject`: reject a proposed memory with a reason
-- `mempr export`: write accepted memory to a destination
-- MCP tools for agent harnesses: `propose_memory`, `review_memory`,
-  `accept_memory`, `reject_memory`, `memory_diff`, `export_context`
+- `mempr propose`: open a Memory PR
+- `mempr inbox`: show open Memory PRs
+- `mempr diff`: show the proposed memory change
+- `mempr review`: approve, request changes, or comment
+- `mempr merge`: merge an approved Memory PR
+- `mempr close`: close a risky or incorrect Memory PR
+- `mempr export`: write merged memory to a destination
+- MCP tools for agent harnesses: `propose_memory`, `list_memory_prs`,
+  `diff_memory_pr`, `review_memory_pr`, `merge_memory_pr`,
+  `close_memory_pr`, `export_memory_context`
 
-## Memory Change Record
+## Project Docs
+
+- [ADR-0001: Memory write governance](docs/adr/0001-memory-pr-write-governance.md)
+- [Build plan](docs/build-plan.md)
+- [Threat model](docs/threat-model.md)
+- [Integrations](docs/integrations.md)
+- [Design review](docs/design-review.md)
+
+## Memory PR Record
 
 ```json
 {
-  "id": "mem_01",
+  "id": "mpr_01",
+  "status": "open",
   "memory": "Jadan prefers concise final answers for completed work summaries.",
   "source": {
     "type": "conversation",
@@ -142,10 +154,11 @@ The smallest useful version should provide:
   },
   "scope": "assistant-response-style",
   "risk": "low",
+  "decision": "auto_merge",
   "ttl": null,
   "destination": "MEMORY.md",
-  "status": "accepted",
-  "created_at": "2026-05-21T00:00:00Z"
+  "created_at": "2026-05-21T00:00:00Z",
+  "updated_at": "2026-05-21T00:00:00Z"
 }
 ```
 
