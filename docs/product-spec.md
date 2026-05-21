@@ -25,7 +25,7 @@ control surface for memory mutation:
 - Does it conflict with older memory?
 - Should it be written automatically, reviewed, or blocked?
 
-MemPR treats every durable memory write as a transaction.
+MemPR treats every durable memory write as a Memory PR.
 
 ## Product Shape
 
@@ -42,28 +42,31 @@ The tool should work even if the only destination is a local Markdown file.
 ```txt
 1. Agent decides something might be useful to remember.
 2. Agent calls `propose_memory`.
-3. MemPR creates a memory change record.
+3. MemPR opens a Memory PR.
 4. Policy classifies the proposal as low, medium, or high risk.
-5. Low-risk proposals can be auto-accepted.
-6. Medium-risk proposals are queued for review.
-7. High-risk proposals are rejected or require explicit approval.
-8. Accepted records are exported to one or more memory destinations.
+5. Low-risk proposals can be auto-merged.
+6. Medium-risk proposals stay open for review.
+7. High-risk proposals are closed or require explicit approval.
+8. Merged Memory PRs are exported to one or more memory destinations.
 ```
 
 ## Example CLI Flow
 
 ```bash
-mempr propose \
-  --memory "This repo uses pnpm for package management." \
-  --source ./package.json \
+mempr propose "This repo uses pnpm for package management." \
+  --source package.json \
   --scope repo \
-  --destination MEMORY.md
+  --destination AGENTS.md
 
-mempr list --status pending
+mempr inbox
 
-mempr accept mem_01
+mempr diff mpr_01
 
-mempr export --destination MEMORY.md
+mempr review mpr_01 --approve --body "Matches repo convention."
+
+mempr merge mpr_01
+
+mempr export --to agents
 ```
 
 ## Example Agent Rule
@@ -72,7 +75,7 @@ Add this to an agent instruction file:
 
 ```txt
 Do not write durable memory directly. When you discover something that may be
-useful across sessions, call MemPR to propose the memory with a source, scope,
+useful across sessions, call MemPR to open a Memory PR with a source, scope,
 risk level, and destination.
 ```
 
@@ -82,13 +85,13 @@ Policy should be boring and inspectable.
 
 ```json
 {
-  "auto_accept": [
+  "auto_merge": [
     {
       "scope": "repo",
       "risk": "low"
     }
   ],
-  "require_review": [
+  "leave_open": [
     {
       "risk": "medium"
     },
@@ -96,7 +99,7 @@ Policy should be boring and inspectable.
       "contains_personal_inference": true
     }
   ],
-  "reject": [
+  "close": [
     {
       "contains_secret": true
     },
@@ -138,6 +141,7 @@ V1 should support:
 
 - local JSONL ledger
 - Markdown memory file
+- `AGENTS.md`
 - Claude-style memory file
 
 Later adapters:
@@ -165,11 +169,11 @@ The wedge is governance around memory writes.
 The repo is useful when a developer can:
 
 - install it locally
-- propose a memory from the CLI
+- open a Memory PR from the CLI
 - see a diff-like pending record
-- auto-accept low-risk memory
-- reject high-risk memory
-- export accepted memory into a Markdown file
+- auto-merge low-risk memory
+- close high-risk memory
+- export merged memory into a Markdown file
 - connect an agent through MCP
 
 ## Future Direction
@@ -181,4 +185,3 @@ Once write governance works, MemPR can expand into read governance:
 - filter memories by scope
 - avoid injecting sensitive memory into untrusted agents
 - explain why a recalled memory was selected
-
