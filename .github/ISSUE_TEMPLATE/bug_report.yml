@@ -1,0 +1,30 @@
+name: Bug report
+description: Report behavior that looks wrong or unsafe.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the command, input, and output when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "0.1.0 or commit SHA"
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "OS, Node version, memory destination, agent harness"
+
