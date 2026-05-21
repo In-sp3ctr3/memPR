@@ -1,0 +1,43 @@
+{
+  "name": "mempr",
+  "version": "0.1.0",
+  "description": "Pull requests for AI memory.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mempr": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.js"
+  },
+  "keywords": [
+    "ai-agents",
+    "memory",
+    "mcp",
+    "provenance",
+    "agentic-ai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/In-sp3ctr3/memPR.git"
+  },
+  "bugs": {
+    "url": "https://github.com/In-sp3ctr3/memPR/issues"
+  },
+  "homepage": "https://github.com/In-sp3ctr3/memPR#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}
+

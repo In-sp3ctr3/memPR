@@ -25,6 +25,24 @@ An agent can infer, summarize, or import a memory that is:
 Most memory systems focus on storage and retrieval. MemPR focuses on the moment
 before something becomes durable memory.
 
+## Quick Start
+
+```bash
+npm install
+npm run build
+
+node dist/cli.js propose \
+  --memory "This repo uses npm for package management." \
+  --source package.json \
+  --scope repo
+
+node dist/cli.js list
+node dist/cli.js export --destination MEMORY.md
+```
+
+MemPR stores its local ledger in `.mempr/ledger.jsonl`. The directory is ignored
+by default so teams can decide when, where, and how to share approved memory.
+
 ## The Idea
 
 MemPR turns memory writes into reviewable changes.
