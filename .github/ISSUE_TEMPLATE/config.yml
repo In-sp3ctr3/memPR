@@ -1,0 +1,6 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security reports
+    url: https://github.com/In-sp3ctr3/memPR/security/advisories/new
+    about: Please report vulnerabilities privately.
+
