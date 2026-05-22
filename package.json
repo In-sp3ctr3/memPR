@@ -1,11 +1,13 @@
 {
   "name": "mempr",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Pull requests for AI memory.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mempr": "./dist/cli.js"
+    "mempr": "./dist/cli.js",
+    "mempr-mcp": "./dist/mcp-stdio.js",
+    "mempr-mcp-http": "./dist/mcp-http.js"
   },
   "files": [
     "dist",
@@ -40,4 +42,3 @@
     "typescript": "^5.8.0"
   }
 }
-
