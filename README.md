@@ -66,6 +66,18 @@ authentication.
 
 Current package metadata is local-first release `1.0.0`.
 
+Install from npm:
+
+```bash
+npm install -g mempr
+```
+
+Install with Homebrew:
+
+```bash
+brew install In-sp3ctr3/tap/mempr
+```
+
 Install the latest GitHub release tarball:
 
 ```bash
@@ -177,6 +189,15 @@ MemPR ships two local MCP entrypoints:
 ```bash
 mempr-mcp
 mempr-mcp-http
+```
+
+The self-hosted HTTP entrypoint is also available as an OCI image:
+
+```bash
+docker run --rm -p 3927:3927 \
+  -e MEMPR_MCP_HTTP_TOKENS='[{"token":"dev-token","subject":"local","scopes":["mempr.records.read"]}]' \
+  -v "$PWD:/workspace" \
+  ghcr.io/in-sp3ctr3/mempr:1.0.0
 ```
 
 The stdio server is intended for local agent integrations. The HTTP server is a

@@ -1,0 +1,11 @@
+.git
+.github
+.mempr
+node_modules
+dist
+coverage
+*.tgz
+mempr-source.zip
+.DS_Store
+__MACOSX
+npm-debug.log*
