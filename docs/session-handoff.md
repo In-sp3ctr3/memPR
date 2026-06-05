@@ -12,15 +12,17 @@ has moved far past the original v0.1 skeleton: docs, ADRs, source, tests, MCP,
 local adapters, read-context governance, permission-shaped read constraints,
 and the post-7L backlog have all been developed in one broad worktree.
 
-The worktree is intentionally dirty and contains many untracked files from
-completed phases. Do not run destructive git commands. Do not reset, checkout,
-or revert files unless the user explicitly asks for that.
+The repository has since been merged to `main` and published through the
+local-first 1.0 release trail. Always check `git status --short --branch`
+before editing, and do not reset, checkout, or revert files unless the user
+explicitly asks for that.
 
 Canonical docs:
 
 - [PRD](prd.md)
 - [ADR index](adr/README.md)
 - [Remaining backlog council](council/2026-05-22-remaining-backlog-solidification-pass.md)
+- [Post-1.0 product slice council](council/2026-05-22-post-1-0-product-slices-council.md)
 - [Phase 7L actor identity/auth boundary ADR](adr/0029-read-actor-identity-auth-boundary.md)
 
 ## Current Status
@@ -56,7 +58,8 @@ After Phase 7L source/tests/docs integration:
 - Focused contract tests passed: `16/16`.
 - Focused API/CLI/MCP tests passed: `57/57`.
 - `npm run lint` passed.
-- Full `npm test` passed: `181/181`.
+- Full `npm test` passed during the 1.0 completion and docs-publication pass:
+  `209/209`.
 - `git diff --check` passed for the touched Phase 7L files.
 - Stale wording scans found no accidental docs-only/`7M` shipped-claim drift
   after cleanup.
@@ -190,9 +193,10 @@ accepts it:
 
 ## Recommended Next Move
 
-Do not start implementation by saying "Phase 7M." The right next session move is
-to verify the full local-first 1.0 gate, then open fresh ADRs only for concrete
-post-1.0 changes.
+Do not start implementation by saying "Phase 7M." The post-1.0 product slice
+ADRs now live at ADR-0036 through ADR-0043 and remain `Proposed`. The right next
+session move is to accept, revise, or reject a specific proposed ADR before
+implementing that slice.
 
 ## Guardrails For The Next Session
 
@@ -213,13 +217,22 @@ post-1.0 changes.
 
 ## Known Worktree Shape
 
-`git status --short` is expected to show many modified and untracked files from
-the cumulative implementation sequence. Important recent docs/files include:
+`main` is expected to be clean after the publication and docs-polish merges.
+Important recent docs/files include:
 
 - `docs/prd.md`
 - `docs/adr/README.md`
 - `docs/adr/0029-read-actor-identity-auth-boundary.md`
 - `docs/council/2026-05-22-remaining-backlog-solidification-pass.md`
+- `docs/council/2026-05-22-post-1-0-product-slices-council.md`
+- `docs/adr/0036-live-adapter-compatibility-and-rollback.md`
+- `docs/adr/0037-scanner-configuration-and-redaction-policy.md`
+- `docs/adr/0038-diagnostics-retention-and-audit-log-boundary.md`
+- `docs/adr/0039-reviewer-identity-and-multi-user-approval.md`
+- `docs/adr/0040-hosted-service-deployment-boundary.md`
+- `docs/adr/0041-retrieval-ranking-vector-search-and-knowledge-graph.md`
+- `docs/adr/0042-model-assisted-memory-classification.md`
+- `docs/adr/0043-compliance-and-legal-retention-boundary.md`
 - `src/read-permissions.ts`
 - `src/mcp-contract.ts`
 - `test/read-permissions.test.js`

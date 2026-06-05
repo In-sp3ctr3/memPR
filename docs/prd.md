@@ -114,6 +114,12 @@ Disallowed claim:
 Every future feature must be marked `shipped`, `planned`, or `deferred` in this
 matrix or in a replacement matrix.
 
+Post-1.0 product-slice proposals now live in ADR-0036 through ADR-0043. They
+cover live adapter compatibility, scanner configuration/redaction, diagnostics
+retention, reviewer identity, hosted service, retrieval/vector/graph scope,
+model-assisted classification, and compliance/legal-retention boundaries. These
+ADRs are planning gates, not shipped behavior.
+
 ## 7. V0.1 Product Scope
 
 Shipped v0.1 behavior:
