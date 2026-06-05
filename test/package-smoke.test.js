@@ -130,7 +130,7 @@ test("installed packed package import exposes the public SDK boundary", async ()
     });
 
     const probe = [
-      "const mod = await import('mempr');",
+      "const mod = await import('@in-sp3ctr3/mempr');",
       "if (typeof mod.proposeMemory !== 'function') throw new Error('missing proposeMemory');",
       "if (typeof mod.verifyMemorySource !== 'function') throw new Error('missing verifyMemorySource');",
       "if (typeof mod.scanPersistentFields !== 'function') throw new Error('missing scanPersistentFields');",
