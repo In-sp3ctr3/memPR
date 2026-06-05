@@ -13,7 +13,8 @@ import {
 } from "../dist/ledger.js";
 import {
   readEvents,
-  replayEvents
+  replayEvents,
+  verifyEventIntegrity
 } from "../dist/events.js";
 
 const exec = promisify(execFile);
@@ -26,6 +27,7 @@ test("propose writes a memory_proposed event and preserves the current ledger vi
       {
         memory: "This repo stores durable memory proposals in JSONL.",
         source: "src/ledger.ts",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -55,6 +57,7 @@ test("events include schema version, hashes, and hash-chain links", async () => 
       {
         memory: "First hash-chain memory.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -78,6 +81,51 @@ test("events include schema version, hashes, and hash-chain links", async () => 
     assert.equal(events[1].schema_version, "mempr-event-v2");
     assert.equal(events[1].previous_event_hash, events[0].event_hash);
     assert.match(events[1].event_hash, /^sha256:[0-9a-f]{64}$/);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("blocked proposals do not append events and preserve the event hash chain", async () => {
+  const root = await makeTempRoot();
+  const secret = "token=memprFakeeventBlockedProposalShouldNotPersist123";
+
+  try {
+    const record = await proposeMemory(
+      {
+        memory: "Normal replay memory before blocked proposal.",
+        risk: "medium"
+      },
+      root
+    );
+
+    await assert.rejects(
+      proposeMemory(
+        {
+          memory: `api_key=${secret}`,
+          source: "events-test",
+          sourceTrust: "trusted",
+          scope: "repo"
+        },
+        root
+      ),
+      /blocked without persistence/i
+    );
+
+    await updateRecordStatus(record.id, "accepted", "Confirmed after blocked audit.", root);
+
+    const rawEvents = await readFile(join(root, ".mempr", "events.jsonl"), "utf8");
+    const events = await readEvents(root);
+    const replayed = replayEvents(events);
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["memory_proposed", "memory_status_changed"]
+    );
+    assert.doesNotMatch(rawEvents, new RegExp(escapeRegExp(secret)));
+    verifyEventIntegrity(events);
+    assert.deepEqual(replayed.map((candidate) => candidate.id), [record.id]);
+    assert.equal(replayed[0].status, "accepted");
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -153,7 +201,8 @@ test("export writes a memory_exported event with exact destination and exported 
     const exported = await proposeMemory(
       {
         memory: "Exported memory for the default destination.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -170,7 +219,8 @@ test("export writes a memory_exported event with exact destination and exported 
     await proposeMemory(
       {
         memory: "Accepted memory for a different destination.",
-        source: "AGENTS.md",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -231,6 +281,7 @@ test("event replay rejects duplicate proposals and dangling references", async (
       {
         memory: "Replay integrity baseline memory.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -270,7 +321,6 @@ test("event replay rejects duplicate proposals and dangling references", async (
           type: "memory_exported",
           created_at: new Date().toISOString(),
           destination: "MEMORY.md",
-          output_path: "MEMORY.md",
           record_ids: ["mem_missing"]
         }
       ]),
@@ -370,6 +420,10 @@ function parseJsonl(content, path) {
 
 function sortRecords(records) {
   return [...records].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function runCli(args) {

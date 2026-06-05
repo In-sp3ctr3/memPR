@@ -5,8 +5,9 @@ Status: Accepted
 ## Context
 
 The local stdio MCP server was already useful, but the R10 plan required a
-self-hosted Streamable HTTP entrypoint with OAuth-style protected-resource
-metadata and real request checks. Hosted SaaS remains out of scope.
+self-hosted Streamable HTTP entrypoint with static bearer-token checks,
+protected-resource metadata, and real request checks. Hosted SaaS remains out
+of scope.
 
 ## Decision
 

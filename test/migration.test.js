@@ -27,7 +27,12 @@ test("migration backfills missing or empty events from a non-empty ledger idempo
         await migrate(root);
 
         const firstEventsContent = await readFile(join(root, ".mempr", "events.jsonl"), "utf8");
-        const replayed = replayEvents(await readEvents(root));
+        const events = await readEvents(root);
+        const replayed = replayEvents(events);
+
+        assert.equal(events[0].schema_version, "mempr-event-v2");
+        assert.match(events[0].event_hash, /^sha256:[a-f0-9]{64}$/);
+        assert.match(events[0].records_hash, /^sha256:[a-f0-9]{64}$/);
 
         assert.deepEqual(sortRecords(replayed), sortRecords(records));
 
@@ -104,7 +109,9 @@ test("migration stores canonical records when legacy optional fields are omitted
     const [record] = replayEvents([event]);
 
     assert.equal(record.memory, "Legacy memory with omitted optional fields.");
+    assert.equal(record.schema_version, "mempr-record-v1");
     assert.equal(record.source.uri, "manual");
+    assert.deepEqual(record.source.verification, legacySourceVerification());
     assert.equal(record.source_trust, "unknown");
     assert.equal(record.scope, "user");
     assert.equal(record.destination, "MEMORY.md");
@@ -114,6 +121,55 @@ test("migration stores canonical records when legacy optional fields are omitted
     assert.equal(record.expires_at, null);
     assert.deepEqual(record.supersedes, []);
     assert.deepEqual(record.conflicts_with, []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("migration normalizes legacy reject policy decisions to reject_audited", async () => {
+  const root = await makeTempRoot();
+  const migrate = await loadMigration();
+
+  try {
+    const record = makeRecord("mem_legacy_reject_decision", "rejected");
+    delete record.schema_version;
+    record.decision = "reject";
+    record.decision_reason = "Legacy unsafe instruction rejection.";
+    await writeLedger(root, [record]);
+
+    await migrate(root);
+
+    const [event] = await readEvents(root);
+    const [migrated] = replayEvents([event]);
+
+    assert.equal(migrated.schema_version, "mempr-record-v1");
+    assert.equal(migrated.decision, "reject_audited");
+    assert.equal(migrated.status, "rejected");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("migration refuses secret-like legacy record data without writing events", async () => {
+  const root = await makeTempRoot();
+  const migrate = await loadMigration();
+  const secret = "token=memprFakemigrationShouldNotCopySecretFields1234567890";
+
+  try {
+    const record = makeRecord("mem_secret_legacy", "accepted");
+    record.status_reason = `approved with token ${secret}`;
+    await writeLedger(root, [record]);
+
+    const result = await captureMigrationResult(migrate, root);
+    const serialized = JSON.stringify(result.value);
+
+    assert.equal(await fileExists(join(root, ".mempr", "events.jsonl")), false);
+    assert.equal(result.threw, false);
+    assert.equal(result.value.changed, false);
+    assert.equal(result.value.reason, "ledger_malformed");
+    assert.equal(result.value.issues[0].code, "ledger_malformed");
+    assert.match(result.value.issues[0].message, /secret-like record data/i);
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(secret)));
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -242,14 +298,19 @@ function makeRecord(id, status, statusReason = null) {
   const now = "2026-05-21T00:00:00.000Z";
 
   return {
+    schema_version: "mempr-record-v1",
     id,
     memory: `Migration test memory for ${id}.`,
     source: {
       type: "manual",
-      uri: "manual"
+      uri: "manual",
+      verification: legacySourceVerification()
     },
     source_trust: "unknown",
     scope: "user",
+    kind: "fact",
+    tags: [],
+    confidence: null,
     risk: "medium",
     decision: "review",
     decision_reason: "Medium risk memory needs review.",
@@ -257,12 +318,28 @@ function makeRecord(id, status, statusReason = null) {
     destination: "MEMORY.md",
     status,
     status_reason: statusReason,
+    reviewer: null,
+    approved_by: null,
+    last_verified_at: null,
+    last_used_at: null,
+    retention_class: null,
+    priority: null,
+    applies_to_paths: [],
     ttl: null,
     expires_at: null,
     supersedes: [],
     conflicts_with: [],
     created_at: now,
     updated_at: now
+  };
+}
+
+function legacySourceVerification() {
+  return {
+    status: "unverified",
+    method: "none",
+    checked_at: null,
+    reason: "Record was created before source verification metadata existed."
   };
 }
 
@@ -274,6 +351,10 @@ function isModuleNotFound(error) {
   return error instanceof Error
     && "code" in error
     && error.code === "ERR_MODULE_NOT_FOUND";
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function fileExists(path) {

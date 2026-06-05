@@ -44,7 +44,7 @@ not canonical decisions.
 | [0032](0032-r1-r2-audit-integrity-and-source-trust.md) | R1-R2 audit integrity and source trust | Accepted | Adds schema-versioned hash-chain events, policy-config hashes, `mempr check` hash validation, repair-from-events, and untrusted-source review gating without compliance-grade audit claims | Event hash schema, repair authority, source-trust effects, policy-config hash semantics, or audit wording changes |
 | [0033](0033-r6-r7-diagnostics-and-scanning.md) | R6-R7 diagnostics and accepted-memory scanning | Accepted | Adds separate redacted diagnostics, support bundles, correlation IDs, accepted-memory secret blockers, sensitive warnings, and marker recognition without safety/redaction claims | Diagnostics fields, retention, scanner patterns, warning/block behavior, redaction semantics, or content-leak boundaries change |
 | [0034](0034-r10-self-hosted-mcp-http.md) | R10 self-hosted MCP HTTP transport | Accepted | Adds `mempr-mcp-http`, protected-resource metadata, Bearer token/audience/scope checks, Origin/Host defenses, Accept validation, and rate limiting for self-hosted Streamable HTTP MCP | HTTP auth, OAuth metadata, scopes, transport behavior, origin/host policy, rate limits, or hosted claims change |
-| [0035](0035-r11-local-first-1-0-release.md) | R11 local-first 1.0 release | Accepted | Freezes the local-first 1.0 release boundary with package smoke tests, migration guide, security checklist, deprecation policy, and no compliance-grade claims | Package bins/version, release checklist, migration guide, compatibility policy, deprecation policy, or public claim boundary changes |
+| [0035](0035-r11-local-first-1-0-release.md) | R11 local-first 1.0 release | Accepted | Records the local-first 1.0 release boundary after safety-gate revalidation | Package bins/version, release checklist, migration guide, compatibility policy, deprecation policy, or public claim boundary changes |
 | [0036](0036-live-adapter-compatibility-and-rollback.md) | Live adapter compatibility and rollback posture | Proposed | Defines provider contract profiles, payload compatibility, rollback posture, and third-party store claim boundaries for future R9 hardening | Provider payloads, metadata fields, idempotency, downstream IDs, retry/error mapping, rollback, credential handling, or third-party store claims change |
 | [0037](0037-scanner-configuration-and-redaction-policy.md) | Scanner configuration and redaction policy | Proposed | Defines local scanner policy configuration and keeps automatic redaction as reviewed proposals rather than silent mutation | Scanner policy schema, blocker/warning precedence, redaction marker semantics, automatic redaction, or safety/redaction claims change |
 | [0038](0038-diagnostics-retention-and-audit-log-boundary.md) | Diagnostics retention and audit log boundary | Proposed | Defines local diagnostics retention controls while keeping diagnostics, domain events, and logs separate from compliance audit claims | Diagnostics schema, pruning, retention config, support bundle export, operational logging, or audit/legal-retention wording changes |
@@ -64,7 +64,7 @@ not canonical decisions.
 
 ## Post-1.0 Scope-Change Backlog
 
-R1-R11 are accepted for the local-first 1.0 boundary. Future ADRs should now be
+R1-R11 are accepted for the local-first 1.0 boundary. Future ADRs should be
 opened for concrete changes rather than extending Phase 7 alphabetically.
 
 Follow-up hardening that stays within the local-first product boundary is now

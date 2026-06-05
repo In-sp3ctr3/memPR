@@ -1,7 +1,8 @@
-# MemPR 1.0 Migration Guide
+# MemPR Migration Guide
 
-MemPR 1.0 keeps the local `.mempr/ledger.jsonl` current view and
-`.mempr/events.jsonl` event history. Existing stores can remain in place.
+Current package metadata is local-first release `1.0.0`. MemPR keeps the local
+`.mempr/ledger.jsonl` current view and `.mempr/events.jsonl` event history.
+Existing stores can remain in place.
 
 ## From Older Local Stores
 
@@ -26,6 +27,9 @@ MemPR 1.0 keeps the local `.mempr/ledger.jsonl` current view and
 - Missing read policy keeps existing read behavior unchanged.
 - When read policy exists, signed local-key read access is required for gated
   read surfaces.
+- Legacy records missing `schema_version` are normalized to
+  `mempr-record-v1`; legacy policy decision `reject` is normalized to
+  `reject_audited`.
 - `source_trust: "untrusted"` now prevents automatic acceptance; `trusted` does
   not bypass deny, secret, sensitive, relationship, TTL, or policy blockers.
 - `retired` is a valid status and never deletes or rewrites historical records.

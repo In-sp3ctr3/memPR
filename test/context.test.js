@@ -125,6 +125,7 @@ test("API context returns accepted exact-destination records and omits pending, 
       {
         memory: repoMemory,
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -149,6 +150,7 @@ test("API context returns accepted exact-destination records and omits pending, 
       {
         memory: otherDestinationMemory,
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -165,6 +167,35 @@ test("API context returns accepted exact-destination records and omits pending, 
     assert.equal(context.records.length, 1);
     assert.deepEqual(context.records.map((record) => record.id), [accepted.id]);
     assert.equal(context.records[0].memory, repoMemory);
+    assert.deepEqual(Object.keys(context.records[0]).sort(), [
+      "applies_to_paths",
+      "confidence",
+      "destination",
+      "expires_at",
+      "id",
+      "kind",
+      "memory",
+      "priority",
+      "scope",
+      "source",
+      "source_trust",
+      "tags"
+    ]);
+    assert.deepEqual(Object.keys(context.records[0].source).sort(), [
+      "type",
+      "uri",
+      "verification"
+    ]);
+    assert.deepEqual(Object.keys(context.records[0].source.verification).sort(), [
+      "method",
+      "status"
+    ]);
+    assert.equal(Object.hasOwn(context.records[0], "status_reason"), false);
+    assert.equal(Object.hasOwn(context.records[0], "decision_reason"), false);
+    assert.equal(Object.hasOwn(context.records[0], "policy_version"), false);
+    assert.equal(Object.hasOwn(context.records[0], "reviewer"), false);
+    assert.equal(Object.hasOwn(context.records[0], "approved_by"), false);
+    assert.equal(Object.hasOwn(context.records[0].source, "quote"), false);
     assertNoEcho(JSON.stringify(context.records), [
       pendingMemory,
       rejectedMemory,
@@ -184,6 +215,7 @@ test("API context applies scope filtering after destination integrity checks pas
       {
         memory: "Scoped context should include repo memory.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -193,6 +225,7 @@ test("API context applies scope filtering after destination integrity checks pas
       {
         memory: "Scoped context should omit project memory.",
         source: "tsconfig.json",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md"
       },
@@ -226,7 +259,8 @@ test("API context opt-in permission constraint narrows accepted scopes without c
       {
         memory: repoMemory,
         quote: `${repoMemory} quote.`,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -236,7 +270,8 @@ test("API context opt-in permission constraint narrows accepted scopes without c
       {
         memory: projectMemory,
         quote: `${projectMemory} quote.`,
-        source: "tsconfig.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md"
       },
@@ -319,7 +354,8 @@ test("API context actor labels are caller-asserted and not inferred from identit
       {
         memory: repoMemory,
         quote: repoQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -441,7 +477,8 @@ test("API context opt-in permission constraint fails closed for disallowed or in
       {
         memory: repoMemory,
         quote: repoQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -451,7 +488,8 @@ test("API context opt-in permission constraint fails closed for disallowed or in
       {
         memory: projectMemory,
         quote: projectQuote,
-        source: "tsconfig.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md"
       },
@@ -566,6 +604,7 @@ test("API context opt-in permission expiry constraint narrows records and warnin
       {
         memory: soonMemory,
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         ttl: soonExpiry,
         destination: "MEMORY.md"
@@ -576,6 +615,7 @@ test("API context opt-in permission expiry constraint narrows records and warnin
       {
         memory: longMemory,
         source: "tsconfig.json",
+        sourceTrust: "trusted",
         scope: "repo",
         ttl: "2099-06-01T00:00:00Z",
         destination: "MEMORY.md"
@@ -586,6 +626,7 @@ test("API context opt-in permission expiry constraint narrows records and warnin
       {
         memory: noExpiryMemory,
         source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -595,6 +636,7 @@ test("API context opt-in permission expiry constraint narrows records and warnin
       {
         memory: exactMemory,
         source: "package-lock.json",
+        sourceTrust: "trusted",
         scope: "repo",
         ttl: validUntil,
         destination: "MEMORY.md"
@@ -605,6 +647,7 @@ test("API context opt-in permission expiry constraint narrows records and warnin
       {
         memory: scopeFilteredMemory,
         source: "docs/MEMORY.md",
+        sourceTrust: "trusted",
         scope: "project",
         ttl: soonExpiry,
         destination: "MEMORY.md"
@@ -691,6 +734,7 @@ test("API context opt-in permission relationship constraints narrow records afte
       {
         memory: anchorMemory,
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -700,6 +744,7 @@ test("API context opt-in permission relationship constraints narrow records afte
       {
         memory: cleanMemory,
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -709,6 +754,7 @@ test("API context opt-in permission relationship constraints narrow records afte
       {
         memory: conflictMemory,
         source: "tsconfig.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         conflictsWith: [anchor.id]
@@ -719,6 +765,7 @@ test("API context opt-in permission relationship constraints narrow records afte
       {
         memory: supersedingMemory,
         source: "package-lock.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         supersedes: [anchor.id]
@@ -729,6 +776,7 @@ test("API context opt-in permission relationship constraints narrow records afte
       {
         memory: scopeFilteredMemory,
         source: "docs/MEMORY.md",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md",
         conflictsWith: [anchor.id]
@@ -739,6 +787,7 @@ test("API context opt-in permission relationship constraints narrow records afte
       {
         memory: expiringMemory,
         source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         ttl: soonExpiry,
         destination: "MEMORY.md",
@@ -862,6 +911,7 @@ test("API context-status ignores read-context permission expiry constraints", as
       {
         memory: expiringMemory,
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         ttl: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         destination: "MEMORY.md"
@@ -872,6 +922,7 @@ test("API context-status ignores read-context permission expiry constraints", as
       {
         memory: projectMemory,
         source: "tsconfig.json",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md"
       },
@@ -915,7 +966,8 @@ test("API context fails closed for expired accepted target records before scope 
       {
         memory: expiredMemory,
         quote: expiredQuote,
-        source: "tsconfig.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md",
         ttl: "2000-01-01"
@@ -926,6 +978,7 @@ test("API context fails closed for expired accepted target records before scope 
       {
         memory: "Fresh repo memory cannot hide an expired project record.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -1011,6 +1064,7 @@ test("API context is read-only for nested destinations and does not create direc
       {
         memory: "Nested context reads must not create destination directories.",
         source: "docs/MEMORY.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/MEMORY.md"
       },
@@ -1046,7 +1100,8 @@ test("API context status summarizes destination readiness without leaking memory
       {
         memory: acceptedMemory,
         quote: acceptedQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -1073,6 +1128,7 @@ test("API context status summarizes destination readiness without leaking memory
       {
         memory: otherDestinationMemory,
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -1082,6 +1138,7 @@ test("API context status summarizes destination readiness without leaking memory
       {
         memory: nestedMemory,
         source: "docs/MEMORY.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/MEMORY.md"
       },
@@ -1141,7 +1198,8 @@ test("API context status exact destination filter reports expired blockers witho
       {
         memory: expiredMemory,
         quote: expiredQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ttl: "2000-01-01"
@@ -1152,6 +1210,7 @@ test("API context status exact destination filter reports expired blockers witho
       {
         memory: freshMemory,
         source: "tsconfig.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -1178,6 +1237,7 @@ test("API context status exact destination filter reports expired blockers witho
       {
         memory: otherDestinationMemory,
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -1249,7 +1309,8 @@ test("API context and status warn on accepted records approaching expiry without
       {
         memory: expiringMemory,
         quote: expiringQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "project",
         destination: "MEMORY.md",
         ttl: expiryDaysFromNow(3)
@@ -1260,6 +1321,7 @@ test("API context and status warn on accepted records approaching expiry without
       {
         memory: farMemory,
         source: "tsconfig.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ttl: expiryDaysFromNow(30)
@@ -1289,6 +1351,7 @@ test("API context and status warn on accepted records approaching expiry without
       {
         memory: otherDestinationMemory,
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md",
         ttl: expiryDaysFromNow(3)
@@ -1337,6 +1400,7 @@ test("API read-context and status metadata stay below permissioned read-governan
       {
         memory: "Boundary test should surface expiry warning metadata only.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ttl: expiryDaysFromNow(3)
@@ -1347,6 +1411,7 @@ test("API read-context and status metadata stay below permissioned read-governan
       {
         memory: "Boundary test should surface expiry issue metadata only.",
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md",
         ttl: "2000-01-01"
@@ -1394,6 +1459,8 @@ test("CLI context --json returns the same accepted exact-destination scoped reco
       repoMemory,
       "--source",
       "package.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1418,6 +1485,8 @@ test("CLI context --json returns the same accepted exact-destination scoped reco
       otherDestinationMemory,
       "--source",
       "AGENTS.md",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1466,6 +1535,8 @@ test("CLI context --json opt-in permission constraint narrows accepted scopes", 
       repoMemory,
       "--source",
       "package.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1480,6 +1551,8 @@ test("CLI context --json opt-in permission constraint narrows accepted scopes", 
       projectMemory,
       "--source",
       "tsconfig.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "project",
       "--destination",
@@ -1586,6 +1659,8 @@ test("CLI context --json opt-in permission expiry constraint narrows records", a
       soonMemory,
       "--source",
       "package.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--ttl",
@@ -1602,6 +1677,8 @@ test("CLI context --json opt-in permission expiry constraint narrows records", a
       longMemory,
       "--source",
       "tsconfig.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--ttl",
@@ -1618,6 +1695,8 @@ test("CLI context --json opt-in permission expiry constraint narrows records", a
       noExpiryMemory,
       "--source",
       "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1632,6 +1711,8 @@ test("CLI context --json opt-in permission expiry constraint narrows records", a
       exactMemory,
       "--source",
       "package-lock.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--ttl",
@@ -1648,6 +1729,8 @@ test("CLI context --json opt-in permission expiry constraint narrows records", a
       scopeFilteredMemory,
       "--source",
       "docs/MEMORY.md",
+      "--source-trust",
+      "trusted",
       "--scope",
       "project",
       "--ttl",
@@ -1757,6 +1840,8 @@ test("CLI context --json opt-in permission relationship constraints narrow recor
       anchorMemory,
       "--source",
       "AGENTS.md",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1771,6 +1856,8 @@ test("CLI context --json opt-in permission relationship constraints narrow recor
       cleanMemory,
       "--source",
       "package.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1785,6 +1872,8 @@ test("CLI context --json opt-in permission relationship constraints narrow recor
       conflictMemory,
       "--source",
       "tsconfig.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1801,6 +1890,8 @@ test("CLI context --json opt-in permission relationship constraints narrow recor
       supersedingMemory,
       "--source",
       "package-lock.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1817,6 +1908,8 @@ test("CLI context --json opt-in permission relationship constraints narrow recor
       scopeFilteredMemory,
       "--source",
       "docs/MEMORY.md",
+      "--source-trust",
+      "trusted",
       "--scope",
       "project",
       "--destination",
@@ -1833,6 +1926,8 @@ test("CLI context --json opt-in permission relationship constraints narrow recor
       expiringMemory,
       "--source",
       "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--ttl",
@@ -1955,7 +2050,9 @@ test("CLI context --json opt-in permission constraint fails closed without conte
       "--quote",
       repoQuote,
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1971,7 +2068,9 @@ test("CLI context --json opt-in permission constraint fails closed without conte
       "--quote",
       projectQuote,
       "--source",
-      "tsconfig.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "project",
       "--destination",
@@ -2107,6 +2206,8 @@ test("CLI context text output renders accepted records without leaking excluded 
       acceptedMemory,
       "--source",
       "package.json",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -2158,7 +2259,9 @@ test("CLI context --json exits non-zero with non-leaky issues for expired accept
       "--quote",
       expiredQuote,
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -2207,7 +2310,8 @@ async function assertRelationshipContextBlocked({
       {
         memory: linkedMemory,
         quote: linkedQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -2217,7 +2321,8 @@ async function assertRelationshipContextBlocked({
       {
         memory: blockingMemory,
         quote: blockingQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ...blockingInput(linked.id)
@@ -2267,7 +2372,8 @@ async function assertRelationshipContextStatusBlocked({
       {
         memory: linkedMemory,
         quote: linkedQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -2277,7 +2383,8 @@ async function assertRelationshipContextStatusBlocked({
       {
         memory: blockingMemory,
         quote: blockingQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ...blockingInput(linked.id)

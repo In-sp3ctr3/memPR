@@ -1,19 +1,25 @@
 import { createCorrelationId } from "./diagnostics.js";
+import { normalizeLocalFileDestination } from "./export-adapters.js";
+import { memoryRecordStringFields } from "./persistence-safety.js";
+import {
+  REDACTION_MARKERS,
+  redactedPreview
+} from "./redaction.js";
+import {
+  isRedactionMarker,
+  reportableRecordId,
+  scanPersistentFields
+} from "./safety.js";
 import type { MemoryRecord } from "./types.js";
 
-export const REDACTION_MARKERS = [
-  "[redacted]",
-  "<redacted>",
-  "***redacted***",
-  "redacted",
-  "[mempr:redacted]",
-  "<mempr:redacted>"
-] as const;
+export { REDACTION_MARKERS };
 
 export type MemoryScanSeverity = "block" | "warn";
 export type MemoryScanFindingCode =
   | "secret_like_content"
-  | "sensitive_content";
+  | "sensitive_content"
+  | "managed_block_marker_content"
+  | "invalid_destination";
 
 export interface MemoryScanFinding {
   code: MemoryScanFindingCode;
@@ -35,22 +41,6 @@ export interface AcceptedMemoryScanResult {
 export interface AcceptedMemoryScanOptions {
   allowRedactionMarkers?: boolean;
 }
-
-interface ScannerPattern {
-  field: string;
-  test(text: string, options: Required<AcceptedMemoryScanOptions>): boolean;
-}
-
-const SECRET_PATTERNS: readonly ScannerPattern[] = [
-  literalSecretPattern("memory", /-----BEGIN [A-Z ]*PRIVATE KEY-----/i),
-  literalSecretPattern("memory", /\bsk-[A-Za-z0-9_-]{20,}\b/),
-  literalSecretPattern("memory", /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/),
-  literalSecretPattern("memory", /\bAKIA[0-9A-Z]{16}\b/),
-  literalSecretPattern("memory", /\bAIza[0-9A-Za-z_-]{35}\b/),
-  literalSecretPattern("memory", /\bxox[baprs]-[0-9A-Za-z-]{20,}\b/),
-  literalSecretPattern("memory", /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{20,}\b/i),
-  keyedSecretPattern("memory")
-];
 
 const SENSITIVE_PATTERNS: readonly RegExp[] = [
   /\bdiagnosed with\b/i,
@@ -84,11 +74,23 @@ export function scanAcceptedMemoryRecords(
       continue;
     }
 
-    const fields = scannableRecordFields(record);
+    const fields = memoryRecordStringFields(record);
     redactionMarkerCount += fields.filter(({ text }) => containsRedactionMarker(text)).length;
 
-    const secretFields = fields
-      .filter(({ text }) => hasSecretLikeContent(text, resolvedOptions))
+    const persistentFindings = scanPersistentFields(fields)
+      .filter((finding) => {
+        if (!resolvedOptions.allowRedactionMarkers || finding.code !== "secret_like_content") {
+          return true;
+        }
+
+        const field = fields.find((entry) => entry.field === finding.field);
+        return field ? !keyedSecretValueIsRedactionMarker(field.text) : true;
+      });
+    const markerFields = persistentFindings
+      .filter((finding) => finding.code === "managed_block_marker")
+      .map(({ field }) => field);
+    const secretFields = persistentFindings
+      .filter((finding) => finding.code !== "managed_block_marker")
       .map(({ field }) => field);
 
     if (secretFields.length > 0) {
@@ -96,9 +98,35 @@ export function scanAcceptedMemoryRecords(
         code: "secret_like_content",
         severity: "block",
         message: "Accepted memory record contains blocked content.",
-        destination: record.destination,
-        recordIds: [record.id],
+        destination: safeFindingDestination(record.destination, secretFields),
+        recordIds: [reportableRecordId(record.id)],
         fields: uniqueSorted(secretFields),
+        correlationId: createCorrelationId()
+      });
+      continue;
+    }
+
+    if (hasInvalidDestination(record.destination)) {
+      issues.push({
+        code: "invalid_destination",
+        severity: "block",
+        message: "Accepted memory record has an invalid destination path.",
+        destination: record.destination,
+        recordIds: [reportableRecordId(record.id)],
+        fields: ["destination"],
+        correlationId: createCorrelationId()
+      });
+      continue;
+    }
+
+    if (markerFields.length > 0) {
+      issues.push({
+        code: "managed_block_marker_content",
+        severity: "block",
+        message: "Accepted memory record contains MemPR managed block markers.",
+        destination: record.destination,
+        recordIds: [reportableRecordId(record.id)],
+        fields: uniqueSorted(markerFields),
         correlationId: createCorrelationId()
       });
       continue;
@@ -114,7 +142,7 @@ export function scanAcceptedMemoryRecords(
         severity: "warn",
         message: "Accepted memory record may contain sensitive personal or regulated information.",
         destination: record.destination,
-        recordIds: [record.id],
+        recordIds: [reportableRecordId(record.id)],
         fields: uniqueSorted(sensitiveFields),
         correlationId: createCorrelationId()
       });
@@ -129,63 +157,21 @@ export function scanAcceptedMemoryRecords(
   };
 }
 
-function scannableRecordFields(record: MemoryRecord): Array<{ field: string; text: string }> {
-  const fields = [
-    {
-      field: "memory",
-      text: record.memory
-    }
-  ];
-
-  if (typeof record.source.quote === "string" && record.source.quote.trim()) {
-    fields.push({
-      field: "source.quote",
-      text: record.source.quote
-    });
-  }
-
-  return fields;
-}
-
-function hasSecretLikeContent(
-  text: string,
-  options: Required<AcceptedMemoryScanOptions>
-): boolean {
-  return SECRET_PATTERNS.some((pattern) => pattern.test(text, options));
-}
-
 function hasSensitiveContent(text: string): boolean {
   return SENSITIVE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function literalSecretPattern(field: string, pattern: RegExp): ScannerPattern {
-  return {
-    field,
-    test: (text) => pattern.test(text)
-  };
+function hasInvalidDestination(destination: string): boolean {
+  try {
+    normalizeLocalFileDestination(destination);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
-function keyedSecretPattern(field: string): ScannerPattern {
-  const pattern = /\b(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|pwd|refresh[_-]?token|secret|token)\b\s*[:=]\s*['"]?([^'"\s]+)/gi;
-
-  return {
-    field,
-    test: (text, options) => {
-      pattern.lastIndex = 0;
-
-      for (const match of text.matchAll(pattern)) {
-        const value = match[2];
-
-        if (options.allowRedactionMarkers && isRedactionMarker(value)) {
-          continue;
-        }
-
-        return true;
-      }
-
-      return false;
-    }
-  };
+function safeFindingDestination(destination: string, fields: readonly string[]): string {
+  return fields.includes("destination") ? redactedPreview(destination) : destination;
 }
 
 function containsRedactionMarker(text: string): boolean {
@@ -193,9 +179,9 @@ function containsRedactionMarker(text: string): boolean {
   return REDACTION_MARKERS.some((marker) => normalized.includes(normalizeMarker(marker)));
 }
 
-function isRedactionMarker(value: string): boolean {
-  const normalized = normalizeMarker(value);
-  return REDACTION_MARKERS.some((marker) => normalized === normalizeMarker(marker));
+function keyedSecretValueIsRedactionMarker(text: string): boolean {
+  const match = text.match(/\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|pwd|refresh[_-]?token|secret|token)\b\s*[:=]\s*['"]?([^'"\s]+)/i);
+  return match ? isRedactionMarker(match[1]) : false;
 }
 
 function normalizeMarker(value: string): string {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,34 +13,25 @@ import {
   summarizeReadContextStatus,
   updateRecordStatus
 } from "../dist/ledger.js";
+import { syncLiveAdapter } from "../dist/live-adapters.js";
 import { readDiagnostics } from "../dist/diagnostics.js";
 import { scanAcceptedMemoryRecords } from "../dist/scanner.js";
+import { fakeOpenAiKey } from "./helpers/fake-secrets.js";
 
 const exec = promisify(execFile);
 
 test("accepted-memory scanner blocks secret-like accepted records at context and export preview without diagnostics writes", async () => {
   const root = await makeTempRoot();
-  const secretMemory = "Emergency fixture api_key=sk-secretBoundaryValue1234567890.";
-  const secretQuote = "Quote repeats api_key=sk-secretBoundaryQuote1234567890.";
+  const secretMemory = "Emergency fixture api_key=memprFakesecretBoundaryValue1234567890.";
+  const secretQuote = "Quote repeats api_key=memprFakesecretBoundaryQuote1234567890.";
 
   try {
-    const rejected = await proposeMemory(
-      {
-        memory: secretMemory,
-        quote: secretQuote,
-        source: "manual",
-        risk: "high",
-        destination: "MEMORY.md"
-      },
-      root
-    );
-    const accepted = await updateRecordStatus(
-      rejected.id,
-      "accepted",
-      "Accepted to verify boundary scanner blocks legacy secret-like records.",
-      root
-    );
-    const eventsBefore = await readFile(join(root, ".mempr", "events.jsonl"), "utf8");
+    const accepted = await seedAcceptedRecord(root, fixedAcceptedRecord({
+      id: "mem_legacy_secret_scanner",
+      memory: secretMemory,
+      quote: secretQuote
+    }));
+    const eventsBefore = await readOptional(join(root, ".mempr", "events.jsonl"));
 
     const context = await assembleReadContext({ destination: "MEMORY.md" }, root);
 
@@ -48,7 +39,7 @@ test("accepted-memory scanner blocks secret-like accepted records at context and
     assert.deepEqual(context.recordIds, []);
     assert.deepEqual(context.records, []);
     assert.equal(context.issues[0].code, "secret_like_content");
-    assert.deepEqual(context.issues[0].recordIds, [accepted.id]);
+    assert.match(context.issues[0].recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
     assert.match(context.issues[0].message, /Correlation ID: diag_/);
     assertNoEcho(JSON.stringify(context), [secretMemory, secretQuote]);
 
@@ -57,18 +48,238 @@ test("accepted-memory scanner blocks secret-like accepted records at context and
       (error) => {
         assert(error instanceof Error);
         assert.match(error.message, /blocked content/i);
-        assert.match(error.message, new RegExp(escapeRegExp(accepted.id)));
+        assert.match(error.message, /\[MEMPR_RECORD_ID_HASH:[0-9a-f]{16}\]/);
         assert.match(error.message, /Correlation ID: diag_/);
         assertNoEcho(error.message, [secretMemory, secretQuote]);
         return true;
       }
     );
 
-    assert.equal(await readFile(join(root, ".mempr", "events.jsonl"), "utf8"), eventsBefore);
+    assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), eventsBefore);
     await assertPathMissing(join(root, "MEMORY.md"));
     await assertPathMissing(join(root, ".mempr", "diagnostics.jsonl"));
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepted-memory scanner blocks secret-like source URI before export", async () => {
+  const root = await makeTempRoot();
+  const secretUri = "docs/token=memprFakesourceUriScannerSecret1234567890.md";
+
+  try {
+    const record = fixedAcceptedRecord({
+      id: "mem_secret_source_uri",
+      memory: "Source URI scanner fixture.",
+      sourceUri: secretUri
+    });
+    await seedAcceptedRecord(root, record);
+    const scan = scanAcceptedMemoryRecords([record]);
+
+    assert.equal(scan.ok, false);
+    assert.equal(scan.issues[0].code, "secret_like_content");
+    assert.deepEqual(scan.issues[0].fields, ["source.uri"]);
+    assertNoEcho(JSON.stringify(scan.issues), [secretUri]);
+
+    await assert.rejects(
+      previewMarkdownExport("MEMORY.md", root),
+      /blocked content/i
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepted-memory scanner blocks secret-like source quote before export", async () => {
+  const root = await makeTempRoot();
+  const secretQuote = "Source quote says api_key=memprFakesourceQuoteScannerSecret1234567890.";
+
+  try {
+    const record = fixedAcceptedRecord({
+      id: "mem_secret_source_quote",
+      memory: "Source quote scanner fixture.",
+      quote: secretQuote
+    });
+    await seedAcceptedRecord(root, record);
+    const scan = scanAcceptedMemoryRecords([record]);
+
+    assert.equal(scan.ok, false);
+    assert.equal(scan.issues[0].code, "secret_like_content");
+    assert.deepEqual(scan.issues[0].fields, ["source.quote"]);
+    assertNoEcho(JSON.stringify(scan.issues), [secretQuote]);
+
+    await assert.rejects(
+      previewMarkdownExport("MEMORY.md", root),
+      /blocked content/i
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepted-memory scanner blocks managed block markers in memory before export", async () => {
+  const root = await makeTempRoot();
+
+  try {
+    const record = fixedAcceptedRecord({
+      id: "mem_marker_memory",
+      memory: "Unsafe marker <!-- mempr:start --> in memory."
+    });
+    await seedAcceptedRecord(root, record);
+    const scan = scanAcceptedMemoryRecords([record]);
+
+    assert.equal(scan.ok, false);
+    assert.equal(scan.issues[0].code, "managed_block_marker_content");
+    assert.deepEqual(scan.issues[0].fields, ["memory"]);
+
+    await assert.rejects(
+      previewMarkdownExport("MEMORY.md", root),
+      /managed block markers/i
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepted-memory scanner blocks managed block markers in scope before export", async () => {
+  const root = await makeTempRoot();
+
+  try {
+    const record = fixedAcceptedRecord({
+      id: "mem_marker_scope",
+      memory: "Scope marker scanner fixture.",
+      scope: "repo <!-- mempr:end -->"
+    });
+    await seedAcceptedRecord(root, record);
+    const scan = scanAcceptedMemoryRecords([record]);
+
+    assert.equal(scan.ok, false);
+    assert.equal(scan.issues[0].code, "managed_block_marker_content");
+    assert.deepEqual(scan.issues[0].fields, ["scope"]);
+
+    await assert.rejects(
+      previewMarkdownExport("MEMORY.md", root),
+      /managed block markers/i
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepted-memory scanner blocks secret-like destination before export", async () => {
+  const root = await makeTempRoot();
+  const destination = "token=memprFakedestinationScannerSecret1234567890/MEMORY.md";
+
+  try {
+    const record = fixedAcceptedRecord({
+      id: "mem_secret_destination",
+      memory: "Destination scanner fixture.",
+      destination
+    });
+    await seedAcceptedRecord(root, record);
+    const scan = scanAcceptedMemoryRecords([record]);
+
+    assert.equal(scan.ok, false);
+    assert.equal(scan.issues[0].code, "secret_like_content");
+    assert.deepEqual(scan.issues[0].fields, ["destination"]);
+    assertNoEcho(JSON.stringify(scan.issues), [destination]);
+
+    await assert.rejects(
+      previewMarkdownExport(destination, root),
+      /blocked content|secret-like content|invalid export destination/i
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepted-memory scanner blocks secret-like metadata returned by context surfaces", async () => {
+  const cases = [
+    {
+      field: "status_reason",
+      apply: (record, secret) => {
+        record.status_reason = `accepted with token ${secret}`;
+      }
+    },
+    {
+      field: "reviewer",
+      apply: (record, secret) => {
+        record.reviewer = `reviewer-${secret}`;
+      }
+    },
+    {
+      field: "approved_by",
+      apply: (record, secret) => {
+        record.approved_by = `approver-${secret}`;
+      }
+    },
+    {
+      field: "retention_class",
+      apply: (record, secret) => {
+        record.retention_class = `retain-${secret}`;
+      }
+    },
+    {
+      field: "source.verification.git_commit",
+      apply: (record, secret) => {
+        record.source.verification = {
+          status: "verified",
+          method: "file_quote",
+          checked_at: "2026-05-22T00:00:00.000Z",
+          reason: "Source quote matched file content.",
+          git_commit: secret
+        };
+      }
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot();
+    const secret = `token=memprFake${testCase.field.replaceAll(".", "-").replaceAll("_", "-")}ShouldNotEcho1234567890`;
+
+    try {
+      const record = fixedAcceptedRecord({
+        id: `mem_secret_${testCase.field.replaceAll(".", "_")}`,
+        memory: `Scanner metadata fixture for ${testCase.field}.`
+      });
+      testCase.apply(record, secret);
+      await seedAcceptedRecord(root, record);
+
+      const scan = scanAcceptedMemoryRecords([record]);
+      const context = await assembleReadContext({ destination: "MEMORY.md" }, root);
+      const liveReport = await syncLiveAdapter({
+        destination: "MEMORY.md",
+        dryRun: true
+      }, root);
+
+      assert.equal(scan.ok, false, testCase.field);
+      assert.equal(scan.issues[0].code, "secret_like_content", testCase.field);
+      assert.deepEqual(scan.issues[0].fields, [testCase.field], testCase.field);
+      assertNoEcho(JSON.stringify(scan.issues), [secret]);
+
+      assert.equal(context.ok, false, testCase.field);
+      assert.deepEqual(context.records, [], testCase.field);
+      assert.equal(context.issues[0].code, "secret_like_content", testCase.field);
+      assertNoEcho(JSON.stringify(context), [secret]);
+
+      await assert.rejects(
+        previewMarkdownExport("MEMORY.md", root),
+        (error) => {
+          assert(error instanceof Error);
+          assert.match(error.message, /blocked content/i);
+          assertNoEcho(error.message, [secret]);
+          return true;
+        },
+        testCase.field
+      );
+
+      assert.equal(liveReport.ok, false, testCase.field);
+      assert.equal(liveReport.blocked, true, testCase.field);
+      assert.deepEqual(liveReport.issues, ["secret_like_content"], testCase.field);
+      assertNoEcho(JSON.stringify(liveReport), [secret]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
   }
 });
 
@@ -115,9 +326,55 @@ test("accepted-memory scanner warns for sensitive accepted records without block
 
     assert.deepEqual(preview.warnings.map((warning) => warning.code), ["sensitive_content"]);
     assertNoEcho(JSON.stringify(preview.warnings), [sensitiveMemory, sensitiveQuote]);
-    assert.match(preview.content, /diagnosed with asthma/);
+    assert.match(preview.safe_content_preview, /diagnosed with asthma/);
     await assertPathMissing(join(root, "MEMORY.md"));
     assert.equal(countExportEvents(await readEvents(root)), 0);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("invalid accepted legacy destination blocks status and appears in diagnostics", async () => {
+  const root = await makeTempRoot();
+  const destination = "../outside/MEMORY.md";
+
+  try {
+    const record = fixedAcceptedRecord({
+      id: "mem_invalid_destination",
+      memory: "Invalid destination scanner fixture.",
+      destination
+    });
+    await seedAcceptedRecord(root, record);
+
+    const scan = scanAcceptedMemoryRecords([record]);
+    const status = await summarizeReadContextStatus({}, root);
+    const diagnostics = await rejectedRunCli([
+      "diagnostics",
+      "--root",
+      root,
+      "--dry-run",
+      "--json"
+    ]);
+    const payload = JSON.parse(diagnostics.stdout);
+
+    assert.equal(scan.ok, false);
+    assert.equal(scan.issues[0].code, "invalid_destination");
+    assert.match(scan.issues[0].recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.equal(status.ok, false);
+    assert.equal(status.blocked, true);
+    assert.deepEqual(status.destinations[0].issues.map((issue) => issue.code), [
+      "invalid_destination"
+    ]);
+    assert.match(status.destinations[0].issues[0].recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.equal(payload.bundle.summary.scanBlockers, 1);
+    assert.equal(payload.bundle.scan.issues[0].code, "invalid_destination");
+    assert.match(payload.bundle.scan.issues[0].recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+
+    await assert.rejects(
+      previewMarkdownExport(destination, root),
+      /invalid export destination/i
+    );
+    await assertPathMissing(join(root, ".mempr", "diagnostics.jsonl"));
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -139,48 +396,26 @@ test("scanner treats explicit redaction marker values as redacted only when mark
 
   assert.equal(unsupported.ok, false);
   assert.equal(unsupported.issues[0].code, "secret_like_content");
-  assert.deepEqual(unsupported.issues[0].recordIds, [record.id]);
+  assert.match(unsupported.issues[0].recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
   assertNoEcho(JSON.stringify(unsupported.issues), [record.memory]);
 });
 
 test("CLI diagnostics writes a separate redacted support bundle with correlation id", async () => {
   const root = await makeTempRoot();
-  const secretMemory = "Diagnostics fixture token=sk-diagnosticsSecret1234567890.";
+  const secretMemory = "Diagnostics fixture token=memprFakediagnosticsSecret1234567890.";
   const sensitiveMemory = "Diagnostics fixture patient was diagnosed with migraines.";
-  const quote = "Diagnostics quote includes token=sk-diagnosticsQuote1234567890.";
+  const quote = "Diagnostics quote includes token=memprFakediagnosticsQuote1234567890.";
 
   try {
-    const secret = await proposeMemory(
-      {
-        memory: secretMemory,
-        quote,
-        source: "manual",
-        risk: "high",
-        destination: "MEMORY.md"
-      },
-      root
-    );
-    await updateRecordStatus(
-      secret.id,
-      "accepted",
-      "Accepted to verify diagnostics redaction.",
-      root
-    );
-    const sensitive = await proposeMemory(
-      {
-        memory: sensitiveMemory,
-        source: "manual",
-        risk: "high",
-        destination: "MEMORY.md"
-      },
-      root
-    );
-    await updateRecordStatus(
-      sensitive.id,
-      "accepted",
-      "Accepted to verify diagnostics warning summary.",
-      root
-    );
+    await seedAcceptedRecord(root, fixedAcceptedRecord({
+      id: "mem_legacy_secret_diagnostics",
+      memory: secretMemory,
+      quote
+    }));
+    await seedAcceptedRecord(root, fixedAcceptedRecord({
+      id: "mem_diag_000001",
+      memory: sensitiveMemory
+    }));
 
     const result = await rejectedRunCli([
       "diagnostics",
@@ -194,7 +429,7 @@ test("CLI diagnostics writes a separate redacted support bundle with correlation
     const entries = await readDiagnostics(root);
 
     assert.equal(payload.dryRun, false);
-    assert.equal(payload.diagnosticsPath, diagnosticsFile);
+    assert.equal(payload.diagnosticsPath, "[redacted]");
     assert.match(payload.bundle.correlationId, /^diag_/);
     assert.equal(payload.bundle.summary.scanBlockers, 1);
     assert.equal(payload.bundle.summary.scanWarnings, 1);
@@ -205,8 +440,8 @@ test("CLI diagnostics writes a separate redacted support bundle with correlation
       secretMemory,
       sensitiveMemory,
       quote,
-      "sk-diagnosticsSecret1234567890",
-      "sk-diagnosticsQuote1234567890",
+      "token=memprFakediagnosticsSecret1234567890",
+      "token=memprFakediagnosticsQuote1234567890",
       "diagnosed with migraines"
     ]);
   } finally {
@@ -214,21 +449,58 @@ test("CLI diagnostics writes a separate redacted support bundle with correlation
   }
 });
 
-function fixedAcceptedRecord({ memory }) {
-  return {
-    id: "mem_redacted_marker",
+test("diagnostics redacts corrupted legacy record ids everywhere in the bundle", async () => {
+  const root = await makeTempRoot();
+  const secret = fakeOpenAiKey("DiagnosticsRecordIdShouldNotLeak1234567890");
+  const unsafeId = `legacy-${secret}`;
+
+  try {
+    await seedAcceptedRecord(root, fixedAcceptedRecord({
+      id: unsafeId,
+      memory: "Diagnostics corrupted id fixture."
+    }));
+
+    const result = await rejectedRunCli([
+      "diagnostics",
+      "--root",
+      root,
+      "--json"
+    ]);
+    const payload = JSON.parse(result.stdout);
+    const diagnosticsContent = await readOptional(join(root, ".mempr", "diagnostics.jsonl"));
+    const combined = `${result.stdout}\n${result.stderr ?? ""}\n${diagnosticsContent ?? ""}`;
+
+    assertNoEcho(combined, [secret, unsafeId]);
+    assert.match(combined, /\[MEMPR_RECORD_ID_HASH:[0-9a-f]{16}\]/);
+    assert.match(payload.bundle.records[0].id, /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.match(payload.bundle.scan.issues[0].recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+function fixedAcceptedRecord({
+  id = "mem_marker_fixture",
+  memory,
+  quote,
+  sourceUri = "manual",
+  scope = "repo",
+  destination = "MEMORY.md"
+}) {
+  const record = {
+    id,
     memory,
     source: {
       type: "manual",
-      uri: "manual"
+      uri: sourceUri
     },
     source_trust: "unknown",
-    scope: "repo",
+    scope,
     risk: "low",
     decision: "auto_accept",
     decision_reason: "Fixed scanner test record.",
     policy_version: "test",
-    destination: "MEMORY.md",
+    destination,
     status: "accepted",
     status_reason: null,
     ttl: null,
@@ -238,10 +510,38 @@ function fixedAcceptedRecord({ memory }) {
     created_at: "2026-05-22T00:00:00.000Z",
     updated_at: "2026-05-22T00:00:00.000Z"
   };
+
+  if (quote !== undefined) {
+    record.source.quote = quote;
+  }
+
+  return record;
 }
 
 async function makeTempRoot() {
   return mkdtemp(join(tmpdir(), "mempr-diagnostics-scanner-test-"));
+}
+
+async function seedAcceptedRecord(root, record) {
+  const directory = join(root, ".mempr");
+  const ledger = join(directory, "ledger.jsonl");
+  const existing = await readOptional(ledger);
+
+  await mkdir(directory, { recursive: true });
+  await writeFile(ledger, `${existing ?? ""}${JSON.stringify(record)}\n`);
+  return record;
+}
+
+async function readOptional(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
 }
 
 async function rejectedRunCli(args) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,15 +7,16 @@ import {
   listRecords,
   proposeMemory
 } from "../dist/ledger.js";
+import { loadPolicyConfig } from "../dist/policy-config.js";
 
-test("missing policy config preserves built-in default policy behavior", async () => {
+test("missing policy config uses secure source-trust defaults", async () => {
   const root = await makeTempRoot();
 
   try {
     const repo = await proposeMemory(
       {
         memory: "This repo uses npm for package management.",
-        source: "package.json",
+        source: "manual",
         scope: "repo"
       },
       root
@@ -28,8 +29,9 @@ test("missing policy config preserves built-in default policy behavior", async (
     );
 
     assert.equal(repo.risk, "low");
-    assert.equal(repo.decision, "auto_accept");
-    assert.equal(repo.status, "accepted");
+    assert.equal(repo.decision, "review");
+    assert.equal(repo.status, "pending");
+    assert.match(repo.decision_reason, /unknown source trust/i);
     assert.equal(user.risk, "medium");
     assert.equal(user.decision, "review");
     assert.equal(user.status, "pending");
@@ -60,7 +62,7 @@ test("configured deny terms reject without echoing matched content in the reason
     );
 
     assert.equal(record.risk, "high");
-    assert.equal(record.decision, "reject");
+    assert.equal(record.decision, "reject_audited");
     assert.equal(record.status, "rejected");
     assertNoEcho(record.decision_reason, [denyTerm, memory, quote, "cobalt-lantern"]);
   } finally {
@@ -105,13 +107,15 @@ test("configured risk knobs affect inferred risk only", async () => {
     await writePolicyConfig(root, {
       autoAcceptScopes: ["team"],
       defaultRisk: "high",
-      ttlRisk: "high"
+      ttlRisk: "high",
+      autoAcceptRequiresTrustedSource: false,
+      reviewUnknownSourceTrust: false
     });
 
     const scoped = await proposeMemory(
       {
         memory: "The release team prefers changelog entries grouped by user impact.",
-        source: "docs/release.md",
+        source: "manual",
         scope: "team"
       },
       root
@@ -155,9 +159,127 @@ test("configured risk knobs affect inferred risk only", async () => {
   }
 });
 
+test("configured trust switches can allow legacy unknown low-risk auto-accept", async () => {
+  const root = await makeTempRoot();
+
+  try {
+    await writePolicyConfig(root, {
+      autoAcceptRequiresTrustedSource: false,
+      reviewUnknownSourceTrust: false
+    });
+
+    const unknown = await proposeMemory(
+      {
+        memory: "This repo keeps release notes in CHANGELOG.md.",
+        source: "manual",
+        scope: "repo"
+      },
+      root
+    );
+    const untrusted = await proposeMemory(
+      {
+        memory: "This repo keeps release notes in CHANGELOG.md.",
+        source: "manual",
+        sourceTrust: "untrusted",
+        scope: "repo"
+      },
+      root
+    );
+
+    assert.equal(unknown.risk, "low");
+    assert.equal(unknown.decision, "auto_accept");
+    assert.equal(unknown.status, "accepted");
+    assert.equal(untrusted.risk, "medium");
+    assert.equal(untrusted.decision, "review");
+    assert.equal(untrusted.status, "pending");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("invalid boolean policy config fields fail with helpful messages", async () => {
+  const root = await makeTempRoot();
+
+  try {
+    await writePolicyConfig(root, {
+      autoAcceptRequiresTrustedSource: "yes"
+    });
+
+    await assert.rejects(
+      proposeMemory(
+        {
+          memory: "This ordinary memory should not be recorded with invalid boolean config.",
+          source: "manual"
+        },
+        root
+      ),
+      /Invalid policy config at autoAcceptRequiresTrustedSource: expected a boolean\./
+    );
+
+    assert.deepEqual(await listRecords({}, root), []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("policy config cannot disable built-in secret no-persistence blocking", async () => {
+  const root = await makeTempRoot();
+  const secret = "token=memprFakepolicyConfigCannotWeakenSecretBlocking1234567890";
+
+  try {
+    await writePolicyConfig(root, {
+      blockSecretsWithoutPersistence: false
+    });
+
+    await assert.rejects(
+      proposeMemory(
+        {
+          memory: `api_key=${secret}`,
+          source: "manual",
+          scope: "repo",
+          destination: "MEMORY.md"
+        },
+        root
+      ),
+      (error) => {
+        assert.match(String(error), /blockSecretsWithoutPersistence/i);
+        assert.match(String(error), /cannot be disabled/i);
+        assert.doesNotMatch(String(error), new RegExp(escapeRegExp(secret)));
+        return true;
+      }
+    );
+
+    const ledger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+    const events = await readOptional(join(root, ".mempr", "events.jsonl"));
+
+    assert.deepEqual(await listRecords({}, root), []);
+    assert.equal(ledger, null);
+    assert.equal(events, null);
+    assertNoEcho(events ?? "", [secret]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("legacy true secret-blocking config is accepted but not exposed publicly", async () => {
+  const root = await makeTempRoot();
+
+  try {
+    await writePolicyConfig(root, {
+      blockSecretsWithoutPersistence: true
+    });
+
+    const config = await loadPolicyConfig(root);
+
+    assert.equal(Object.hasOwn(config, "blockSecretsWithoutPersistence"), false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("malformed policy config fails safely without echoing secret values", async () => {
   const root = await makeTempRoot();
-  const secret = "sk-policyConfigShouldNotEcho1234567890";
+  const secret = "token=memprFakepolicyConfigShouldNotEcho1234567890";
 
   try {
     await mkdir(join(root, ".mempr"), { recursive: true });
@@ -191,7 +313,7 @@ test("malformed policy config fails safely without echoing secret values", async
 
 test("policy config validation does not echo invalid field names or values", async () => {
   const root = await makeTempRoot();
-  const secret = "sk-policyFieldShouldNotEcho1234567890";
+  const secret = "token=memprFakepolicyFieldShouldNotEcho1234567890";
 
   try {
     await writePolicyConfig(root, {
@@ -232,6 +354,18 @@ async function writePolicyConfig(root, config) {
     join(root, ".mempr", "policy.json"),
     `${JSON.stringify(config, null, 2)}\n`
   );
+}
+
+async function readOptional(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
 }
 
 function assertNoEcho(value, forbiddenValues) {

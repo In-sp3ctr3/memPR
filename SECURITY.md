@@ -8,8 +8,8 @@ Please treat the project as security-sensitive.
 
 | Version | Supported |
 | --- | --- |
-| 1.x | Yes |
-| < 1.0 | No |
+| 1.x | Supported |
+| 0.x prerelease | Best effort legacy support |
 
 Security fixes target the latest supported release and `main`.
 
@@ -50,4 +50,6 @@ Out of scope:
 
 MemPR is local-first software. It is designed to improve provenance, review, and
 policy handling for agent memory, but it does not provide compliance-grade audit
-guarantees or hosted security monitoring.
+guarantees or hosted security monitoring. Local-key read policy verifies
+signatures over request payloads when configured; it does not provide nonce
+replay protection or session authentication in MemPR 1.0.

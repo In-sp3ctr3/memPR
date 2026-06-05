@@ -25,7 +25,8 @@ test("export blocks accepted conflicts_with links inside the target destination 
       {
         memory: conflictedMemory,
         quote: conflictedQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -35,7 +36,8 @@ test("export blocks accepted conflicts_with links inside the target destination 
       {
         memory: conflictMemory,
         quote: conflictQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         conflictsWith: [conflicted.id]
@@ -73,7 +75,8 @@ test("export blocks accepted supersedes links when the superseded target record 
       {
         memory: supersededMemory,
         quote: supersededQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -83,7 +86,8 @@ test("export blocks accepted supersedes links when the superseded target record 
       {
         memory: replacementMemory,
         quote: replacementQuote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         supersedes: [superseded.id]
@@ -131,6 +135,7 @@ test("export ignores pending and rejected linked records in the target destinati
       {
         memory: "Accepted memory linked to a pending record should export.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         conflictsWith: [pending.id]
@@ -141,6 +146,7 @@ test("export ignores pending and rejected linked records in the target destinati
       {
         memory: "Accepted memory linked to a rejected record should export.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         supersedes: [rejected.id]
@@ -180,7 +186,8 @@ test("export ignores accepted linked records outside the target destination and 
     const otherDestination = await proposeMemory(
       {
         memory: "Accepted memory for AGENTS.md must not block MEMORY.md export.",
-        source: "AGENTS.md",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -190,6 +197,7 @@ test("export ignores accepted linked records outside the target destination and 
       {
         memory: "Accepted MEMORY.md record linked to AGENTS.md should export.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         conflictsWith: [otherDestination.id]
@@ -205,7 +213,8 @@ test("export ignores accepted linked records outside the target destination and 
     await proposeMemory(
       {
         memory: "Independent accepted MEMORY.md record should also export.",
-        source: "README.md",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },

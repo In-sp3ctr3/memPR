@@ -1,8 +1,19 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { AcceptedMemoryScanResult } from "./scanner.js";
 import type { LedgerConsistencyStatus } from "./ledger.js";
+import {
+  hasSecretLikeText,
+  redactedPreview
+} from "./redaction.js";
+import {
+  reportableRecordId,
+  sanitizeJsonForBoundary
+} from "./safety.js";
+import {
+  safeAppendStoreFile,
+  safeReadOptionalStoreFile
+} from "./store-paths.js";
 import type { MemoryRecord } from "./types.js";
 
 const DIAGNOSTICS_DIR = ".mempr";
@@ -104,14 +115,13 @@ export function createDiagnosticsSupportBundle(
     createdAt?: string;
   }
 ): DiagnosticsSupportBundle {
-  const root = resolve(input.root ?? process.cwd());
   const createdAt = input.createdAt ?? new Date().toISOString();
   const correlationId = input.correlationId ?? createCorrelationId();
 
-  return {
+  return redactDiagnosticsSupportBundle({
     correlationId,
     createdAt,
-    root,
+    root: REDACTED,
     summary: {
       records: input.records.length,
       accepted: countStatus(input.records, "accepted"),
@@ -125,7 +135,7 @@ export function createDiagnosticsSupportBundle(
     records: input.records.map(redactedRecordSummary),
     scan: redactedScanSummary(input.scan),
     consistency: redactedConsistencySummary(input.consistency)
-  };
+  });
 }
 
 export async function appendDiagnosticEntry(
@@ -133,21 +143,22 @@ export async function appendDiagnosticEntry(
   root = process.cwd()
 ): Promise<string> {
   const paths = resolveDiagnosticsPaths(root);
+  const redactedBundle = redactDiagnosticsSupportBundle(bundle);
   const entry: DiagnosticEntry = {
-    id: bundle.correlationId,
+    id: redactedBundle.correlationId,
     type: "support_bundle_created",
-    created_at: bundle.createdAt,
-    bundle
+    created_at: redactedBundle.createdAt,
+    bundle: redactedBundle
   };
 
-  await mkdir(paths.directory, { recursive: true });
-  await appendFile(paths.diagnosticsFile, `${JSON.stringify(entry)}\n`);
+  await safeAppendStoreFile(paths.root, DIAGNOSTICS_FILE, `${JSON.stringify(entry)}\n`);
   return paths.diagnosticsFile;
 }
 
 export async function readDiagnostics(root = process.cwd()): Promise<DiagnosticEntry[]> {
   const paths = resolveDiagnosticsPaths(root);
-  const content = await readOptional(paths.diagnosticsFile);
+  const file = await safeReadOptionalStoreFile(paths.root, DIAGNOSTICS_FILE);
+  const content = file.exists ? file.content : "";
 
   if (!content.trim()) {
     return [];
@@ -168,12 +179,12 @@ export async function readDiagnostics(root = process.cwd()): Promise<DiagnosticE
 
 function redactedRecordSummary(record: MemoryRecord): RedactedRecordSummary {
   return {
-    id: record.id,
+    id: reportableRecordId(record.id),
     status: record.status,
     risk: record.risk,
     decision: record.decision,
-    scope: record.scope,
-    destination: record.destination,
+    scope: redactDiagnosticPath(record.scope),
+    destination: redactDiagnosticPath(record.destination),
     sourceType: record.source.type,
     sourceUriHash: digest(record.source.uri),
     hasQuote: typeof record.source.quote === "string" && record.source.quote.trim().length > 0,
@@ -197,8 +208,8 @@ function redactedScanFinding(finding: AcceptedMemoryScanResult["issues"][number]
   return {
     code: finding.code,
     severity: finding.severity,
-    destination: finding.destination,
-    recordIds: [...finding.recordIds],
+    destination: redactDiagnosticPath(finding.destination),
+    recordIds: finding.recordIds.map(reportableRecordId),
     fields: [...finding.fields],
     correlationId: finding.correlationId
   };
@@ -211,8 +222,100 @@ function redactedConsistencySummary(
     ok: consistency.ok,
     currentCount: consistency.currentCount,
     replayedCount: consistency.replayedCount,
-    issues: consistency.issues.map((issue) => ({ ...issue }))
+    issues: consistency.issues.map(redactedConsistencyIssue)
   };
+}
+
+export function redactDiagnosticString(value: string): string {
+  return hasSecretLikeText([{ field: "diagnostics", text: value }])
+    ? redactedPreview(value)
+    : value;
+}
+
+export function redactDiagnosticPath(_value: string): string {
+  return REDACTED;
+}
+
+function redactDiagnosticsSupportBundle(
+  bundle: DiagnosticsSupportBundle
+): DiagnosticsSupportBundle {
+  return redactDiagnosticValue(bundle) as DiagnosticsSupportBundle;
+}
+
+function redactDiagnosticValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactDiagnosticString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(redactDiagnosticValue);
+  }
+
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => {
+        if (isRedactedDiagnosticKey(key)) {
+          return [key, REDACTED];
+        }
+
+        return [key, redactDiagnosticValue(entry)];
+      })
+    );
+  }
+
+  return value;
+}
+
+function redactedConsistencyIssue(
+  issue: LedgerConsistencyStatus["issues"][number]
+): Record<string, unknown> {
+  const redacted = Object.fromEntries(
+    Object.entries(issue).map(([key, entry]) => {
+      if (isRecordIdListKey(key) && Array.isArray(entry)) {
+        return [
+          key,
+          entry.map((id) => typeof id === "string" ? reportableRecordId(id) : sanitizeJsonForBoundary(id))
+        ];
+      }
+
+      if (isRecordIdKey(key) && typeof entry === "string") {
+        return [key, reportableRecordId(entry)];
+      }
+
+      return [key, sanitizeJsonForBoundary(entry)];
+    })
+  );
+
+  return redactDiagnosticValue(redacted) as Record<string, unknown>;
+}
+
+function isRecordIdListKey(key: string): boolean {
+  return [
+    "recordIds",
+    "changedRecordIds",
+    "missingFromReplayIds",
+    "missingFromLedgerIds",
+    "retiredRecordIds",
+    "overrideRecordIds"
+  ].includes(key);
+}
+
+function isRecordIdKey(key: string): boolean {
+  return [
+    "recordId",
+    "missingRecordId"
+  ].includes(key);
+}
+
+function isRedactedDiagnosticKey(key: string): boolean {
+  return [
+    "destination",
+    "output_path",
+    "outputPath",
+    "path",
+    "root",
+    "scope"
+  ].includes(key);
 }
 
 function countStatus(
@@ -224,16 +327,4 @@ function countStatus(
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
-}
-
-async function readOptional(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return "";
-    }
-
-    throw error;
-  }
 }

@@ -18,6 +18,7 @@ test("new proposals without ttl store expires_at as null", async () => {
       {
         memory: "This repo uses npm for package management.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -43,6 +44,7 @@ test("new proposals with valid ttl store canonical expires_at", async () => {
       {
         memory: "The migration window closes on June 1, 2099.",
         source: "docs/runbook.md",
+        sourceTrust: "trusted",
         scope: "repo",
         ttl: "2099-06-01"
       },
@@ -128,7 +130,8 @@ test("export blocks expired accepted records for the target destination", async 
       {
         memory,
         quote,
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ttl: "2000-01-01"
@@ -180,7 +183,8 @@ test("export ignores expired pending, rejected, and other-destination records", 
     await proposeMemory(
       {
         memory: "Expired accepted memory for another destination.",
-        source: "AGENTS.md",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md",
         ttl: "2000-01-01"
@@ -190,7 +194,8 @@ test("export ignores expired pending, rejected, and other-destination records", 
     const fresh = await proposeMemory(
       {
         memory: "Fresh accepted memory for the target destination.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ttl: "2099-01-01"

@@ -1,8 +1,32 @@
 import { basename, isAbsolute } from "node:path";
+import { reportableRecordId } from "./safety.js";
 import type { MemoryRecord } from "./types.js";
 
 export const MEMPR_MANAGED_BLOCK_START = "<!-- mempr:start -->";
 export const MEMPR_MANAGED_BLOCK_END = "<!-- mempr:end -->";
+const RESERVED_DESTINATION_SEGMENTS = new Set([
+  ".mempr",
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage"
+]);
+const RESERVED_TOP_LEVEL_DESTINATION_SEGMENTS = new Set([
+  "src",
+  "test"
+]);
+const RESERVED_ROOT_DESTINATIONS = new Set([
+  ".gitignore",
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json"
+]);
+const MARKDOWN_DESTINATION_PATTERN = /\.(?:md|markdown)$/i;
+const WINDOWS_HOSTILE_FILENAME_CHARS = /[<>:"|?*]/;
+const WINDOWS_RESERVED_BASENAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const MAX_DESTINATION_LENGTH = 240;
+const MAX_DESTINATION_SEGMENT_LENGTH = 120;
 
 export interface LocalFileExportAdapter {
   id: string;
@@ -101,14 +125,18 @@ export function normalizeLocalFileDestination(value: string | null | undefined):
     throw new Error("Destination path is required.");
   }
 
-  if (value.includes("\0")) {
-    throw new Error("Invalid export destination: null bytes are not allowed.");
+  if (/[\u0000-\u001F\u007F]/.test(value)) {
+    throw new Error("Invalid export destination: control characters are not allowed.");
   }
 
   const destination = value.trim();
 
   if (!destination) {
     throw new Error("Destination path is required.");
+  }
+
+  if (destination.length > MAX_DESTINATION_LENGTH) {
+    throw new Error("Invalid export destination: path is too long.");
   }
 
   if (destination.includes("\\")) {
@@ -125,6 +153,10 @@ export function normalizeLocalFileDestination(value: string | null | undefined):
 
   const segments = destination.split("/");
 
+  if (RESERVED_ROOT_DESTINATIONS.has(destination)) {
+    throw new Error("Invalid export destination: reserved repository files are not supported.");
+  }
+
   if (segments.some((segment) => segment === "..")) {
     throw new Error("Invalid export destination: traversal segments are not allowed.");
   }
@@ -133,7 +165,45 @@ export function normalizeLocalFileDestination(value: string | null | undefined):
     throw new Error("Invalid export destination: path segments must be explicit names.");
   }
 
+  if (segments.some((segment) => segment.length > MAX_DESTINATION_SEGMENT_LENGTH)) {
+    throw new Error("Invalid export destination: path segment is too long.");
+  }
+
+  if (segments.some((segment) => WINDOWS_HOSTILE_FILENAME_CHARS.test(segment))) {
+    throw new Error("Invalid export destination: filename contains unsupported characters.");
+  }
+
+  if (segments.some((segment) => WINDOWS_RESERVED_BASENAMES.test(stripMarkdownExtension(segment)))) {
+    throw new Error("Invalid export destination: filename uses a reserved Windows basename.");
+  }
+
+  const firstSegment = segments[0];
+
+  if (
+    firstSegment.startsWith(".")
+    || RESERVED_DESTINATION_SEGMENTS.has(firstSegment)
+    || segments.some((segment) => RESERVED_DESTINATION_SEGMENTS.has(segment))
+  ) {
+    throw new Error("Invalid export destination: reserved repository paths are not supported.");
+  }
+
+  if (RESERVED_TOP_LEVEL_DESTINATION_SEGMENTS.has(firstSegment)) {
+    throw new Error("Invalid export destination: source and test directories are not export targets.");
+  }
+
+  if (segments.length > 1 && firstSegment !== "docs") {
+    throw new Error("Invalid export destination: nested exports are limited to docs/.");
+  }
+
+  if (!MARKDOWN_DESTINATION_PATTERN.test(destination)) {
+    throw new Error("Invalid export destination: only Markdown files are supported.");
+  }
+
   return destination;
+}
+
+function stripMarkdownExtension(segment: string): string {
+  return segment.replace(/\.(?:md|markdown)$/i, "");
 }
 
 export function selectExportAdapter(destination: string): LocalFileExportAdapter {
@@ -153,6 +223,13 @@ export function selectLocalFileExportAdapter(destination: string): LocalFileExpo
   return selectExportAdapter(destination);
 }
 
+export function markdownJsonScalar(value: string): string {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
+}
+
 export function renderGenericMarkdownBlock(
   records: readonly MemoryRecord[]
 ): string {
@@ -167,11 +244,7 @@ export function renderGenericMarkdownBlock(
   }
 
   for (const record of records) {
-    lines.push(`- ${record.memory}`);
-    lines.push(`  - scope: ${record.scope}`);
-    lines.push(`  - source: ${record.source.uri}`);
-    lines.push(`  - source_trust: ${record.source_trust}`);
-    lines.push(`  - id: ${record.id}`);
+    pushRecordLines(lines, record);
   }
 
   lines.push("", MEMPR_MANAGED_BLOCK_END, "");
@@ -230,7 +303,7 @@ function pushScopeGroupedRecordLines(lines: string[], records: readonly MemoryRe
       lines.push("");
     }
 
-    lines.push(`### ${group.heading}`);
+    lines.push(`### ${markdownJsonScalar(group.heading)}`);
     lines.push("");
 
     for (const record of group.records) {
@@ -242,11 +315,47 @@ function pushScopeGroupedRecordLines(lines: string[], records: readonly MemoryRe
 }
 
 function pushRecordLines(lines: string[], record: MemoryRecord): void {
-  lines.push(`- ${record.memory}`);
-  lines.push(`  - scope: ${scopeHeadingLabel(record.scope)}`);
-  lines.push(`  - source: ${record.source.uri}`);
-  lines.push(`  - source_trust: ${record.source_trust}`);
-  lines.push(`  - id: ${record.id}`);
+  lines.push(`- memory: ${markdownJsonScalar(record.memory)}`);
+  lines.push(`  - scope: ${markdownJsonScalar(scopeHeadingLabel(record.scope))}`);
+  lines.push(`  - source: ${markdownJsonScalar(record.source.uri)}`);
+  lines.push(`  - source_trust: ${markdownJsonScalar(record.source_trust)}`);
+  lines.push(`  - source_verified: ${markdownJsonScalar(record.source.verification?.status ?? "unverified")}`);
+  lines.push(`  - source_verification_method: ${markdownJsonScalar(record.source.verification?.method ?? "none")}`);
+
+  if (
+    record.source.verification?.start_line !== undefined
+    && record.source.verification.end_line !== undefined
+  ) {
+    lines.push(
+      `  - source_lines: ${markdownJsonScalar(`${record.source.verification.start_line}-${record.source.verification.end_line}`)}`
+    );
+  }
+
+  if (record.kind && record.kind !== "fact") {
+    lines.push(`  - kind: ${markdownJsonScalar(record.kind)}`);
+  }
+
+  if (record.tags?.length > 0) {
+    lines.push(`  - tags: ${markdownJsonArray(record.tags)}`);
+  }
+
+  if (record.confidence !== null && record.confidence !== undefined) {
+    lines.push(`  - confidence: ${markdownJsonScalar(String(record.confidence))}`);
+  }
+
+  if (record.priority !== null && record.priority !== undefined) {
+    lines.push(`  - priority: ${markdownJsonScalar(String(record.priority))}`);
+  }
+
+  if (record.applies_to_paths?.length > 0) {
+    lines.push(`  - applies_to_paths: ${markdownJsonArray(record.applies_to_paths)}`);
+  }
+
+  lines.push(`  - id: ${markdownJsonScalar(reportableRecordId(record.id))}`);
+}
+
+function markdownJsonArray(values: readonly string[]): string {
+  return `[${values.map(markdownJsonScalar).join(", ")}]`;
 }
 
 function compareScopeRecordGroups(
@@ -306,14 +415,34 @@ function scopeHeadingLabel(scope: string): string {
 }
 
 export function replaceManagedBlock(existing: string, block: string): string {
-  const startIndex = existing.indexOf(MEMPR_MANAGED_BLOCK_START);
-  const endIndex = existing.indexOf(MEMPR_MANAGED_BLOCK_END);
+  const startIndexes = markerIndexes(existing, MEMPR_MANAGED_BLOCK_START);
+  const endIndexes = markerIndexes(existing, MEMPR_MANAGED_BLOCK_END);
 
-  if (startIndex >= 0 && endIndex > startIndex) {
+  if (startIndexes.length === 0 && endIndexes.length === 0) {
+    return [existing.trimEnd(), block.trimEnd()].filter(Boolean).join("\n\n") + "\n";
+  }
+
+  if (startIndexes.length === 1 && endIndexes.length === 1 && endIndexes[0] > startIndexes[0]) {
+    const startIndex = startIndexes[0];
+    const endIndex = endIndexes[0];
     const before = existing.slice(0, startIndex).trimEnd();
     const after = existing.slice(endIndex + MEMPR_MANAGED_BLOCK_END.length).trim();
     return [before, block.trimEnd(), after].filter(Boolean).join("\n\n") + "\n";
   }
 
-  return [existing.trimEnd(), block.trimEnd()].filter(Boolean).join("\n\n") + "\n";
+  throw new Error(
+    "Cannot update MemPR managed block: ambiguous or malformed managed block markers found."
+  );
+}
+
+function markerIndexes(value: string, marker: string): number[] {
+  const indexes: number[] = [];
+  let index = value.indexOf(marker);
+
+  while (index !== -1) {
+    indexes.push(index);
+    index = value.indexOf(marker, index + marker.length);
+  }
+
+  return indexes;
 }

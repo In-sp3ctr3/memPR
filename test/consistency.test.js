@@ -131,6 +131,45 @@ test("consistency check reports replay/current mismatch by record id, count, and
   }
 });
 
+test("consistency check reports invalid stored destinations by record id only", async () => {
+  const root = await makeTempRoot();
+  const checkConsistency = await loadCheckConsistency();
+  const invalidDestination = "../evil.md";
+
+  try {
+    const record = await proposeMemory(
+      {
+        memory: "Legacy invalid destination should be repairable.",
+        risk: "medium",
+        destination: "MEMORY.md"
+      },
+      root
+    );
+    await writeFile(
+      join(root, ".mempr", "ledger.jsonl"),
+      `${JSON.stringify({
+        ...record,
+        destination: invalidDestination
+      })}\n`
+    );
+
+    const records = await listRecords({}, root);
+    const report = await checkConsistency(root);
+    const issue = report.issues.find((candidate) => {
+      return candidate.code === "invalid_record_destination";
+    });
+    const flattened = flattenReport(report);
+
+    assert.equal(records[0].destination, invalidDestination);
+    assert.equal(report.ok, false);
+    assert(issue, `Expected invalid_record_destination in ${JSON.stringify(report)}`);
+    assert.deepEqual(issue.recordIds, [record.id]);
+    assert.doesNotMatch(flattened, new RegExp(escapeRegExp(invalidDestination)));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("consistency check reports event hash tampering without echoing event contents", async () => {
   const root = await makeTempRoot();
   const checkConsistency = await loadCheckConsistency();
@@ -303,6 +342,10 @@ function collectCounts(value, counts) {
 
 function flattenReport(value) {
   return JSON.stringify(value);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isModuleNotFound(error) {
