@@ -5,6 +5,10 @@
 **Purpose:** Give a fresh Codex session enough context to continue without
 reconstructing the long implementation thread.
 
+**Release posture update:** this handoff is historical. Current package
+metadata is local-first release `1.0.0`; later release gates should use the
+release checklist and audit doc.
+
 ## Read This First
 
 MemPR is a local-first governance layer for durable AI memory. The current work
@@ -12,10 +16,9 @@ has moved far past the original v0.1 skeleton: docs, ADRs, source, tests, MCP,
 local adapters, read-context governance, permission-shaped read constraints,
 and the post-7L backlog have all been developed in one broad worktree.
 
-The repository has since been merged to `main` and published through the
-local-first 1.0 release trail. Always check `git status --short --branch`
-before editing, and do not reset, checkout, or revert files unless the user
-explicitly asks for that.
+The repository has been treated as ready for a local-first 1.0 release trail.
+Always check `git status --short --branch` before editing, and do not reset,
+checkout, or revert files unless the user explicitly asks for that.
 
 Canonical docs:
 
@@ -28,8 +31,8 @@ Canonical docs:
 ## Current Status
 
 The originally detailed implementation slices are complete through Phase 7L and
-R1-R11. There is no approved `7M` implementation slice. The current release
-boundary is local-first 1.0.
+R1-R11. There is no approved `7M` implementation slice. The current package
+release posture is local-first `1.0.0`.
 
 The latest important implementation pass completed the R-streams:
 
@@ -47,8 +50,8 @@ The latest important implementation pass completed the R-streams:
 - R10 adds self-hosted `mempr-mcp-http` with protected-resource metadata, Bearer
   token audience/scope checks, Origin/Host defenses, Accept validation, and rate
   limiting.
-- R11 sets the package to local-first `1.0.0` and adds release/migration
-  checklists plus package smoke tests.
+- R11 sets the package to local-first `1.0.0` and retains the
+  release/migration checklists plus package smoke tests.
 
 ## Verification Already Run
 
@@ -179,8 +182,8 @@ R10: self-hosted MCP HTTP transport
 
 R11: release hardening and project completion
 
-- Package version `1.0.0`, package smoke tests, migration guide, release
-  checklist, security checklist, and deprecation policy are shipped.
+- Package version `1.0.0` is backed by package smoke tests, migration guide,
+  release checklist, security checklist, and deprecation policy.
 
 Scope-change work is outside the default backlog until a product-scope ADR
 accepts it:

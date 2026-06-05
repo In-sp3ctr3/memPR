@@ -1,9 +1,13 @@
-import { readFile } from "node:fs/promises";
 import { createPublicKey, verify } from "node:crypto";
-import { join } from "node:path";
+import {
+  assertNoPersistentSecretLikeContent,
+  hasPersistentSecretLikeContent
+} from "./safety.js";
+import {
+  safeReadOptionalStoreFile
+} from "./store-paths.js";
 import type { ReadPermissionSurface } from "./read-permissions.js";
 
-const LEDGER_DIR = ".mempr";
 const PRINCIPALS_FILE = "principals.json";
 
 export const MEMPR_PRINCIPALS_VERSION = 1;
@@ -69,26 +73,23 @@ type CanonicalJsonValue =
   | CanonicalJsonObject;
 
 export async function loadPrincipals(root = process.cwd()): Promise<PrincipalLoadResult> {
-  const file = join(root, LEDGER_DIR, PRINCIPALS_FILE);
-  let raw: string;
-
   try {
-    raw = await readFile(file, "utf8");
+    const file = await safeReadOptionalStoreFile(root, PRINCIPALS_FILE);
+
+    if (!file.exists) {
+      return { exists: false, ok: false };
+    }
+
+    return {
+      exists: true,
+      ok: true,
+      principals: parsePrincipalStore(JSON.parse(file.content) as PrincipalStoreFile)
+    };
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { exists: false, ok: false };
     }
 
-    return { exists: true, ok: false };
-  }
-
-  try {
-    return {
-      exists: true,
-      ok: true,
-      principals: parsePrincipalStore(JSON.parse(raw) as PrincipalStoreFile)
-    };
-  } catch {
     return { exists: true, ok: false };
   }
 }
@@ -102,6 +103,10 @@ export async function verifySignedReadRequest(
   const signature = normalizeText(auth?.signature);
 
   if (!principalId || !signature) {
+    return { ok: false };
+  }
+
+  if (hasUnsafeReadAuthMetadata(auth)) {
     return { ok: false };
   }
 
@@ -226,6 +231,11 @@ function normalizePrincipal(
     throw new Error("Invalid local-key principal.");
   }
 
+  assertNoPersistentSecretLikeContent(
+    [{ field: "principal.id", text: id }],
+    "Principal contains unsafe content."
+  );
+
   if (status !== "active" && status !== "disabled") {
     throw new Error("Invalid principal status.");
   }
@@ -294,6 +304,21 @@ function normalizeStringArray(values: readonly string[]): string[] {
 
 function normalizeText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function hasUnsafeReadAuthMetadata(auth: ReadAuthInput | null | undefined): boolean {
+  const fields = [
+    textField("read-auth.principalId", auth?.principalId),
+    textField("read-auth.nonce", auth?.nonce),
+    textField("read-auth.signedAt", auth?.signedAt)
+  ].filter((field): field is { field: string; text: string } => field !== undefined);
+
+  return hasPersistentSecretLikeContent(fields);
+}
+
+function textField(field: string, value: string | null | undefined): { field: string; text: string } | undefined {
+  const text = normalizeText(value);
+  return text ? { field, text } : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

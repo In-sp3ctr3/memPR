@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
+import { markdownJsonScalar } from "../dist/export-adapters.js";
 import { MCP_PROTOCOL_VERSION } from "../dist/mcp-contract.js";
+import { closeChildProcess } from "./helpers/process-cleanup.js";
+import { fakeOpenAiKey } from "./helpers/fake-secrets.js";
 
 const exec = promisify(execFile);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -126,11 +129,14 @@ test("MCP tools/call returns structured read-only tool results", async (t) => {
     listResult.structuredContent.records.map((record) => record.id),
     [seed.target.id]
   );
+  assert.equal(Object.hasOwn(listResult.structuredContent.records[0], "memory"), false);
+  assert.equal(typeof listResult.structuredContent.records[0].memory_preview, "string");
 
   const inspectResult = assertToolResult(await callTool(probe, "mempr.inspect", {
     id: seed.target.id
   }));
   assert.equal(inspectResult.structuredContent.record.id, seed.target.id);
+  assert.equal(Object.hasOwn(inspectResult.structuredContent.record, "memory"), false);
   assert.equal(inspectResult.structuredContent.reviewContext.candidate.id, seed.target.id);
   assert.deepEqual(
     inspectResult.structuredContent.reviewContext.supersedes.map((record) => record.id),
@@ -157,38 +163,25 @@ test("MCP tools/call returns structured read-only tool results", async (t) => {
   assert.deepEqual(checkResult.structuredContent.status.issues, []);
 
   const beforePreview = await readWriteSnapshot(root);
-  const resolvedRoot = await realpath(root);
   const previewResult = assertToolResult(await callTool(probe, "mempr.export.preview", {
     destination: "MEMORY.md"
   }));
-  assert.deepEqual(previewResult.structuredContent, {
-    dryRun: true,
-    destination: "MEMORY.md",
-    outputPath: join(resolvedRoot, "MEMORY.md"),
-    adapter: {
-      id: "local-file-generic-markdown",
-      title: "Generic Markdown"
-    },
-    recordIds: [seed.accepted.id],
-    recordCount: 1,
-    destinationExists: false,
-    warnings: [],
-    content: [
-      "<!-- mempr:start -->",
-      "## Accepted Memories",
-      "",
-      "- Accepted memory for MCP review context.",
-      "  - scope: user",
-      "  - source: manual",
-      "  - source_trust: unknown",
-      `  - id: ${seed.accepted.id}`,
-      "",
-      "<!-- mempr:end -->",
-      ""
-    ].join("\n")
+  assert.equal(previewResult.structuredContent.dryRun, true);
+  assert.equal(previewResult.structuredContent.destination, "MEMORY.md");
+  assert.equal(Object.hasOwn(previewResult.structuredContent, "outputPath"), false);
+  assert.deepEqual(previewResult.structuredContent.adapter, {
+    id: "local-file-generic-markdown",
+    title: "Generic Markdown"
   });
+  assert.deepEqual(previewResult.structuredContent.recordIds, [seed.accepted.id]);
+  assert.equal(previewResult.structuredContent.recordCount, 1);
+  assert.equal(previewResult.structuredContent.destinationExists, false);
+  assert.deepEqual(previewResult.structuredContent.warnings, []);
+  assert.match(previewResult.structuredContent.safe_content_preview, /Accepted memory for MCP review context\./);
+  assert.match(previewResult.structuredContent.safe_content_preview, /\[MEMPR_REDACTED_MANAGED_BLOCK_MARKER\]/);
+  assert.doesNotMatch(previewResult.structuredContent.safe_content_preview, /<!-- mempr:start -->/);
   assert.doesNotMatch(
-    previewResult.structuredContent.content,
+    previewResult.structuredContent.safe_content_preview,
     /Pending memory for MCP read-only tests\./
   );
   assert.deepEqual(await readWriteSnapshot(root), beforePreview);
@@ -216,7 +209,9 @@ test("MCP context assembles exact-destination scoped records without write side 
     "--memory",
     repoMemory,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -230,7 +225,9 @@ test("MCP context assembles exact-destination scoped records without write side 
     "--memory",
     projectMemory,
     "--source",
-    "tsconfig.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--destination",
@@ -263,7 +260,9 @@ test("MCP context assembles exact-destination scoped records without write side 
     "--memory",
     otherDestinationMemory,
     "--source",
-    "AGENTS.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -322,7 +321,9 @@ test("MCP context accepts opt-in permission scope constraints without write side
     "--quote",
     repoQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -338,7 +339,9 @@ test("MCP context accepts opt-in permission scope constraints without write side
     "--quote",
     projectQuote,
     "--source",
-    "tsconfig.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--destination",
@@ -495,7 +498,9 @@ test("MCP context does not infer read actor identity from env or client hints", 
     "--quote",
     privateQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -596,7 +601,9 @@ test("MCP context accepts opt-in permission expiry constraints without write sid
     "--quote",
     soonQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--ttl",
@@ -612,7 +619,9 @@ test("MCP context accepts opt-in permission expiry constraints without write sid
     "--memory",
     longMemory,
     "--source",
-    "tsconfig.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--ttl",
@@ -629,6 +638,8 @@ test("MCP context accepts opt-in permission expiry constraints without write sid
     noExpiryMemory,
     "--source",
     "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -642,7 +653,9 @@ test("MCP context accepts opt-in permission expiry constraints without write sid
     "--memory",
     exactMemory,
     "--source",
-    "package-lock.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--ttl",
@@ -658,7 +671,9 @@ test("MCP context accepts opt-in permission expiry constraints without write sid
     "--memory",
     scopeFilteredMemory,
     "--source",
-    "docs/MEMORY.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--ttl",
@@ -825,7 +840,9 @@ test("MCP context accepts opt-in permission relationship constraints without wri
     "--memory",
     anchorMemory,
     "--source",
-    "AGENTS.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -839,7 +856,9 @@ test("MCP context accepts opt-in permission relationship constraints without wri
     "--memory",
     cleanMemory,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -853,7 +872,9 @@ test("MCP context accepts opt-in permission relationship constraints without wri
     "--memory",
     conflictMemory,
     "--source",
-    "tsconfig.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -869,7 +890,9 @@ test("MCP context accepts opt-in permission relationship constraints without wri
     "--memory",
     supersedingMemory,
     "--source",
-    "package-lock.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -885,7 +908,9 @@ test("MCP context accepts opt-in permission relationship constraints without wri
     "--memory",
     scopeFilteredMemory,
     "--source",
-    "docs/MEMORY.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--destination",
@@ -902,6 +927,8 @@ test("MCP context accepts opt-in permission relationship constraints without wri
     expiringMemory,
     "--source",
     "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--ttl",
@@ -1058,7 +1085,9 @@ test("MCP context is read-only for nested destinations", async (t) => {
     "--memory",
     "MCP nested context must not create destination directories.",
     "--source",
-    "docs/MEMORY.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1092,6 +1121,7 @@ test("MCP context returns non-leaky blocked contexts without write side effects"
   t.after(async () => {
     await rm(parent, { force: true, recursive: true });
   });
+  await mkdir(expiredRoot, { recursive: true });
 
   const expiredMemory = "MCP context must not echo expired memory.";
   const expiredQuote = "MCP context must not echo expired quote.";
@@ -1105,7 +1135,9 @@ test("MCP context returns non-leaky blocked contexts without write side effects"
     "--quote",
     expiredQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--destination",
@@ -1121,7 +1153,9 @@ test("MCP context returns non-leaky blocked contexts without write side effects"
     "--memory",
     "Fresh scoped memory cannot hide an expired MCP context blocker.",
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1195,7 +1229,9 @@ test("MCP resources/read context returns accepted exact-destination records with
     "--memory",
     repoMemory,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1209,7 +1245,9 @@ test("MCP resources/read context returns accepted exact-destination records with
     "--memory",
     projectMemory,
     "--source",
-    "tsconfig.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--destination",
@@ -1242,7 +1280,9 @@ test("MCP resources/read context returns accepted exact-destination records with
     "--memory",
     otherDestinationMemory,
     "--source",
-    "AGENTS.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1289,7 +1329,9 @@ test("MCP resources/read context is read-only for nested safe destinations", asy
     "--memory",
     "MCP nested context resource must not create destination directories.",
     "--source",
-    "docs/MEMORY.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1317,6 +1359,7 @@ test("MCP resources/read context returns non-leaky blocked context data", async 
   t.after(async () => {
     await rm(parent, { force: true, recursive: true });
   });
+  await mkdir(expiredRoot, { recursive: true });
 
   const expiredMemory = "MCP resource context must not echo expired memory.";
   const expiredQuote = "MCP resource context must not echo expired quote.";
@@ -1330,7 +1373,9 @@ test("MCP resources/read context returns non-leaky blocked context data", async 
     "--quote",
     expiredQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "project",
     "--destination",
@@ -1346,7 +1391,9 @@ test("MCP resources/read context returns non-leaky blocked context data", async 
     "--memory",
     "Fresh MCP resource memory cannot hide an expired context blocker.",
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1386,6 +1433,66 @@ test("MCP resources/read context returns non-leaky blocked context data", async 
   });
 });
 
+test("MCP context surfaces block secret-like accepted metadata fields", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "mempr-mcp-context-secret-metadata-"));
+  const secret = "token=memprFakemcpContextStatusReasonShouldNotEcho1234567890";
+
+  t.after(async () => {
+    await rm(root, { force: true, recursive: true });
+  });
+
+  const record = JSON.parse((await runCli([
+    "propose",
+    "--root",
+    root,
+    "--json",
+    "--memory",
+    "MCP context secret metadata boundary fixture.",
+    "--source",
+    "manual",
+    "--source-trust",
+    "trusted",
+    "--scope",
+    "repo",
+    "--destination",
+    "MEMORY.md"
+  ])).stdout);
+  const ledgerPath = join(root, ".mempr", "ledger.jsonl");
+  const ledgerRecords = (await readFile(ledgerPath, "utf8"))
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  ledgerRecords[0].status_reason = `approved with token ${secret}`;
+  await writeFile(
+    ledgerPath,
+    `${ledgerRecords.map((entry) => JSON.stringify(entry)).join("\n")}\n`
+  );
+
+  const before = await readWriteSnapshot(root);
+  const probe = await startInitializedProbeForRoot(t, root);
+  const toolResult = assertToolResult(await callTool(probe, "mempr.context", {
+    destination: "MEMORY.md"
+  }));
+  const resource = await readJsonResourceContent(probe, "mempr://context/MEMORY.md");
+  const resourceContext = contextFromPayload(resource.payload);
+
+  assert.equal(toolResult.structuredContent.ok, false);
+  assert.deepEqual(toolResult.structuredContent.records, []);
+  assert.equal(toolResult.structuredContent.issues[0].code, "secret_like_content");
+  assert.deepEqual(toolResult.structuredContent.issues[0].recordIds, [record.id]);
+  assertNoEcho(toolText(toolResult), [secret]);
+
+  assert.equal(resourceContext.ok, false);
+  assert.deepEqual(resourceContext.records, []);
+  assert.equal(resourceContext.issues[0].code, "secret_like_content");
+  assert.deepEqual(resourceContext.issues[0].recordIds, [record.id]);
+  assertNoEcho(resource.text, [secret]);
+
+  assert.deepEqual(await readWriteSnapshot(root), before);
+  assert.equal(await countMemoryExportEvents(root), 0);
+  assertJsonRpcOnlyStdout(probe);
+});
+
 test("MCP context status tool and resources report blockers without memory text or writes", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mempr-mcp-context-status-"));
   const expiredMemory = "MCP status must not echo expired target memory.";
@@ -1409,7 +1516,9 @@ test("MCP context status tool and resources report blockers without memory text 
     "--quote",
     expiredQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1425,7 +1534,9 @@ test("MCP context status tool and resources report blockers without memory text 
     "--memory",
     freshMemory,
     "--source",
-    "tsconfig.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1684,7 +1795,9 @@ test("MCP export preview renders named adapters without file or event side effec
     "--memory",
     "MCP preview should use the AGENTS adapter.",
     "--source",
-    "AGENTS.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1698,7 +1811,9 @@ test("MCP export preview renders named adapters without file or event side effec
     "--memory",
     "MCP preview must not include MEMORY destination records.",
     "--source",
-    "MEMORY.md",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1718,11 +1833,10 @@ test("MCP export preview renders named adapters without file or event side effec
   const result = assertToolResult(await callTool(probe, "mempr.export.preview", {
     destination: "AGENTS.md"
   }));
-  const resolvedRoot = await realpath(root);
 
   assert.equal(result.structuredContent.dryRun, true);
   assert.equal(result.structuredContent.destination, "AGENTS.md");
-  assert.equal(result.structuredContent.outputPath, join(resolvedRoot, "AGENTS.md"));
+  assert.equal(Object.hasOwn(result.structuredContent, "outputPath"), false);
   assert.deepEqual(result.structuredContent.adapter, {
     id: "local-file-agents-markdown",
     title: "AGENTS.md"
@@ -1730,10 +1844,10 @@ test("MCP export preview renders named adapters without file or event side effec
   assert.deepEqual(result.structuredContent.recordIds, [agentsRecord.id]);
   assert.equal(result.structuredContent.recordCount, 1);
   assert.equal(result.structuredContent.destinationExists, false);
-  assert.match(result.structuredContent.content, /## MemPR Coding Agent Memories/);
-  assert.match(result.structuredContent.content, /### repo/);
-  assert.match(result.structuredContent.content, /MCP preview should use the AGENTS adapter\./);
-  assert.doesNotMatch(result.structuredContent.content, /MEMORY destination records/);
+  assert.match(result.structuredContent.safe_content_preview, /## MemPR Coding Agent Memories/);
+  assert.match(result.structuredContent.safe_content_preview, /### "repo"/);
+  assert.match(result.structuredContent.safe_content_preview, /MCP preview should use the AGENTS adapter\./);
+  assert.doesNotMatch(result.structuredContent.safe_content_preview, /MEMORY destination records/);
   assert.equal(await readOptional(join(root, "AGENTS.md")), null);
   assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), beforeEvents);
   assertJsonRpcOnlyStdout(probe);
@@ -1744,10 +1858,14 @@ test("MCP export preview reuses blockers and rejects unsafe preview destinations
   const expiredRoot = join(parent, "expired");
   const conflictRoot = join(parent, "conflict");
   const unmanagedRoot = join(parent, "unmanaged");
+  const unsafeRoot = join(parent, "unsafe-read");
+  const outsideRoot = join(parent, "outside");
 
   t.after(async () => {
     await rm(parent, { force: true, recursive: true });
   });
+  await mkdir(expiredRoot, { recursive: true });
+  await mkdir(conflictRoot, { recursive: true });
 
   const expired = JSON.parse((await runCli([
     "propose",
@@ -1757,7 +1875,9 @@ test("MCP export preview reuses blockers and rejects unsafe preview destinations
     "--memory",
     "Expired MCP preview memory must block.",
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--ttl",
@@ -1784,7 +1904,9 @@ test("MCP export preview reuses blockers and rejects unsafe preview destinations
     "--memory",
     "Accepted MCP preview conflicted record.",
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -1798,7 +1920,9 @@ test("MCP export preview reuses blockers and rejects unsafe preview destinations
     "--memory",
     "Accepted MCP preview conflict record.",
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--risk",
@@ -1841,6 +1965,60 @@ test("MCP export preview reuses blockers and rejects unsafe preview destinations
   assert.equal(await readOptional(join(unmanagedRoot, "package.json")), unmanagedBefore);
   assert.equal(await readOptional(join(unmanagedRoot, ".mempr", "events.jsonl")), null);
 
+  await mkdir(unsafeRoot, { recursive: true });
+  await mkdir(outsideRoot, { recursive: true });
+  await runCli([
+    "propose",
+    "--root",
+    unsafeRoot,
+    "--memory",
+    "Unsafe MCP preview destination fixtures must not hang.",
+    "--source",
+    "manual",
+    "--source-trust",
+    "trusted",
+    "--scope",
+    "repo",
+    "--destination",
+    "MEMORY.md"
+  ]);
+  const unsafeEvents = await readOptional(join(unsafeRoot, ".mempr", "events.jsonl"));
+  await exec("mkfifo", [join(unsafeRoot, "MEMORY.md")]);
+  const unsafeProbe = await startInitializedProbeForRoot(t, unsafeRoot);
+  const fifoResult = assertToolResult(await callTool(unsafeProbe, "mempr.export.preview", {
+    destination: "MEMORY.md"
+  }), { isError: true });
+
+  assert.match(toolText(fifoResult), /read safely|destination/i);
+  assert.doesNotMatch(toolText(fifoResult), new RegExp(escapeRegExp(unsafeRoot)));
+  assert.equal(await readOptional(join(unsafeRoot, ".mempr", "events.jsonl")), unsafeEvents);
+
+  await rm(join(unsafeRoot, "MEMORY.md"), { force: true });
+  await writeFile(join(outsideRoot, "MEMORY.md"), "outside target must not be read\n");
+  await symlink(join(outsideRoot, "MEMORY.md"), join(unsafeRoot, "MEMORY.md"));
+  const symlinkResult = assertToolResult(await callTool(unsafeProbe, "mempr.export.preview", {
+    destination: "MEMORY.md"
+  }), { isError: true });
+
+  assert.match(toolText(symlinkResult), /read safely|destination/i);
+  assert.doesNotMatch(toolText(symlinkResult), /outside target/);
+
+  await rm(join(unsafeRoot, "MEMORY.md"), { force: true });
+  await mkdir(join(unsafeRoot, "MEMORY.md"));
+  const directoryResult = assertToolResult(await callTool(unsafeProbe, "mempr.export.preview", {
+    destination: "MEMORY.md"
+  }), { isError: true });
+
+  assert.match(toolText(directoryResult), /read safely|destination/i);
+
+  await rm(join(unsafeRoot, "MEMORY.md"), { force: true, recursive: true });
+  await writeFile(join(unsafeRoot, "MEMORY.md"), "x".repeat(5 * 1024 * 1024 + 1));
+  const oversizedResult = assertToolResult(await callTool(unsafeProbe, "mempr.export.preview", {
+    destination: "MEMORY.md"
+  }), { isError: true });
+
+  assert.match(toolText(oversizedResult), /read safely|destination/i);
+
   for (const destination of [
     "../outside.md",
     "/tmp/outside.md",
@@ -1865,6 +2043,12 @@ test("MCP resources/read returns application/json text for MemPR projections", a
     records.map((record) => record.id).sort(),
     [seed.accepted.id, seed.rejected.id, seed.target.id].sort()
   );
+  for (const record of records) {
+    assert.equal(Object.hasOwn(record, "memory"), false);
+    assert.equal(typeof record.memory_preview, "string");
+    assert.equal(Object.hasOwn(record.source, "uri"), false);
+    assert.equal(typeof record.source.uri_preview, "string");
+  }
 
   const statusPayload = await readJsonResource(probe, "mempr://status");
   const status = statusPayload.status ?? statusPayload;
@@ -1886,6 +2070,8 @@ test("MCP resources/read returns application/json text for MemPR projections", a
   const record = recordPayload.record ?? recordPayload;
   assert.equal(record.id, seed.target.id);
   assert.equal(record.status, "pending");
+  assert.equal(Object.hasOwn(record, "memory"), false);
+  assert.equal(typeof record.memory_preview, "string");
 
   const reviewPayload = await readJsonResource(
     probe,
@@ -1906,6 +2092,73 @@ test("MCP resources/read returns application/json text for MemPR projections", a
   assert(history.events.some((event) => event.type === "memory_proposed"));
 
   assertJsonRpcOnlyStdout(probe);
+});
+
+test("MCP resources/read sanitizes corrupted records, status roots, policy, and history", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), `mempr-mcp-${fakeOpenAiKey("ResourceRoot1234567890")}-`));
+  const unsafeId = "legacy_corrupt_success_id";
+  const sourceSecret = fakeOpenAiKey("memprFakeMcpResourceSource1234567890");
+  const historySecret = fakeOpenAiKey("memprFakeMcpResourceHistory1234567890");
+  const policySecret = fakeOpenAiKey("memprFakeMcpResourcePolicy1234567890");
+  const record = fixedLegacyAcceptedRecord({
+    id: unsafeId,
+    memory: "MCP legacy ID resource should stay projected.",
+    sourceUri: `manual://${sourceSecret}`
+  });
+
+  t.after(async () => {
+    await rm(root, { force: true, recursive: true });
+  });
+
+  await seedLegacyLedgerMigration(root, record, {
+    extraEvents: [{
+      id: "evt_legacy_status_secret",
+      type: "memory_status_changed",
+      created_at: "2026-05-22T00:01:00.000Z",
+      record_id: unsafeId,
+      previous_status: "accepted",
+      next_status: "accepted",
+      reason: historySecret,
+      record
+    }]
+  });
+  await mkdir(join(root, ".mempr"), { recursive: true });
+  await writeFile(join(root, ".mempr", "policy.json"), JSON.stringify({
+    sensitiveTerms: [policySecret],
+    blockSecretsWithoutPersistence: true
+  }));
+
+  const probe = await startInitializedProbeForRoot(t, root);
+  const resources = [
+    await readJsonResourceContent(probe, "mempr://records"),
+    await readJsonResourceContent(probe, `mempr://records/${encodeURIComponent(unsafeId)}`),
+    await readJsonResourceContent(probe, `mempr://records/${encodeURIComponent(unsafeId)}/history`),
+    await readJsonResourceContent(probe, "mempr://context/MEMORY.md"),
+    await readJsonResourceContent(probe, "mempr://contexts"),
+    await readJsonResourceContent(probe, "mempr://status"),
+    await readJsonResourceContent(probe, "mempr://policy")
+  ];
+  const combined = resources.map((resource) => resource.text).join("\n");
+  const records = resources[0].payload.records;
+  const recordPayload = resources[1].payload.record;
+  const history = resources[2].payload;
+  const policy = resources[6].payload.policy;
+
+  assert.match(combined, /\[MEMPR_RECORD_ID_HASH:[0-9a-f]{16}\]/);
+  assertNoEcho(combined, [
+    unsafeId,
+    sourceSecret,
+    historySecret,
+    policySecret,
+    root
+  ]);
+  assert.equal(Object.hasOwn(records[0], "memory"), false);
+  assert.equal(typeof records[0].memory_preview, "string");
+  assert.equal(Object.hasOwn(recordPayload, "memory"), false);
+  assert.equal(typeof recordPayload.source.uri_preview, "string");
+  assert.equal(Object.hasOwn(recordPayload.source, "uri"), false);
+  assert.equal(history.record.id, recordPayload.id);
+  assert.equal(Object.hasOwn(policy, "blockSecretsWithoutPersistence"), false);
 });
 
 test("MCP resources/read rejects non-MemPR, traversal, and unknown URIs", async (t) => {
@@ -2084,6 +2337,70 @@ async function proposePending(root, memory, options = {}) {
   return proposed;
 }
 
+function fixedLegacyAcceptedRecord({
+  id,
+  memory,
+  sourceUri = "manual",
+  destination = "MEMORY.md"
+}) {
+  return {
+    schema_version: "mempr-record-v1",
+    id,
+    memory,
+    source: {
+      type: "manual",
+      uri: sourceUri,
+      verification: {
+        status: "not_applicable",
+        method: "manual",
+        checked_at: null,
+        reason: "Manual source."
+      }
+    },
+    source_trust: "unknown",
+    scope: "repo",
+    kind: "fact",
+    tags: [],
+    confidence: null,
+    risk: "low",
+    decision: "auto_accept",
+    decision_reason: "Legacy accepted test fixture.",
+    policy_version: "test",
+    destination,
+    status: "accepted",
+    status_reason: null,
+    reviewer: null,
+    approved_by: null,
+    last_verified_at: null,
+    last_used_at: null,
+    retention_class: null,
+    priority: null,
+    applies_to_paths: [],
+    ttl: null,
+    expires_at: null,
+    supersedes: [],
+    conflicts_with: [],
+    created_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z"
+  };
+}
+
+async function seedLegacyLedgerMigration(root, record, options = {}) {
+  await mkdir(join(root, ".mempr"), { recursive: true });
+  await writeFile(join(root, ".mempr", "ledger.jsonl"), `${JSON.stringify(record)}\n`);
+  await writeFile(join(root, ".mempr", "events.jsonl"), [
+    JSON.stringify({
+      id: "evt_legacy_migration_fixture",
+      type: "ledger_migrated",
+      created_at: "2026-05-22T00:00:00.000Z",
+      source: "legacy_ledger_jsonl",
+      record_count: 1,
+      records: [record]
+    }),
+    ...(options.extraEvents ?? []).map((event) => JSON.stringify(event))
+  ].join("\n") + "\n");
+}
+
 async function assertMcpContextRelationshipBlocked(t, parent, {
   relationship,
   issueCode,
@@ -2092,6 +2409,7 @@ async function assertMcpContextRelationshipBlocked(t, parent, {
   blockingArgs
 }) {
   const root = join(parent, relationship);
+  await mkdir(root, { recursive: true });
   const linkedQuote = `${linkedMemory} quote.`;
   const blockingQuote = `${blockingMemory} quote.`;
   const linked = JSON.parse((await runCli([
@@ -2104,7 +2422,9 @@ async function assertMcpContextRelationshipBlocked(t, parent, {
     "--quote",
     linkedQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -2120,7 +2440,9 @@ async function assertMcpContextRelationshipBlocked(t, parent, {
     "--quote",
     blockingQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--risk",
@@ -2182,6 +2504,7 @@ async function assertMcpContextResourceRelationshipBlocked(t, parent, {
   blockingArgs
 }) {
   const root = join(parent, `resource-${relationship}`);
+  await mkdir(root, { recursive: true });
   const linkedQuote = `${linkedMemory} quote.`;
   const blockingQuote = `${blockingMemory} quote.`;
   const linked = JSON.parse((await runCli([
@@ -2194,7 +2517,9 @@ async function assertMcpContextResourceRelationshipBlocked(t, parent, {
     "--quote",
     linkedQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -2210,7 +2535,9 @@ async function assertMcpContextResourceRelationshipBlocked(t, parent, {
     "--quote",
     blockingQuote,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--risk",
@@ -2357,7 +2684,7 @@ function assertDestinationStatus(status, destination) {
   assert(Array.isArray(destinationStatus.issues), "status issues must be an array");
   assert(Array.isArray(destinationStatus.warnings), "status warnings must be an array");
   assert.equal(Object.hasOwn(destinationStatus, "records"), false, "status must not include records");
-  assert.equal(Object.hasOwn(destinationStatus, "content"), false, "status must not include content");
+  assert.equal(Object.hasOwn(destinationStatus, "safe_content_preview"), false, "status must not include content");
   return destinationStatus;
 }
 
@@ -2880,20 +3207,26 @@ class StdioMcpProbe {
   }
 
   async close() {
-    if (this.child.exitCode !== null || this.child.killed) {
+    await closeChildProcess(this.child);
+  }
+
+  hasExited() {
+    return this.exit !== undefined
+      || this.child.exitCode !== null
+      || this.child.signalCode !== null;
+  }
+
+  async waitForExit(timeoutMs) {
+    if (this.hasExited()) {
       return;
     }
 
-    this.child.stdin.end();
-    await Promise.race([once(this.child, "exit"), delay(250)]);
+    await Promise.race([once(this.child, "exit"), delay(timeoutMs)]);
+  }
 
-    if (this.child.exitCode === null && !this.child.killed) {
-      this.child.kill("SIGTERM");
-      await Promise.race([once(this.child, "exit"), delay(250)]);
-    }
-
-    if (this.child.exitCode === null && !this.child.killed) {
-      this.child.kill("SIGKILL");
-    }
+  destroyStdioStreams() {
+    this.child.stdin.destroy();
+    this.child.stdout.destroy();
+    this.child.stderr.destroy();
   }
 }

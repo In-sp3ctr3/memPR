@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { readEvents } from "../dist/events.js";
+import { markdownJsonScalar } from "../dist/export-adapters.js";
+import { fakeOpenAiKey } from "./helpers/fake-secrets.js";
 
 const exec = promisify(execFile);
 const READ_PERMISSION_DENIAL_METADATA_KEYS = [
@@ -39,10 +41,18 @@ test("CLI keeps boolean flags from consuming positional ids", async () => {
 
     assert.equal(record.status, "pending");
 
-    await assert.rejects(
-      runCli(["accept", "--root", root, "--json", record.id]),
-      /reason is required/i
-    );
+    const missingReason = await runCliAllowFailure([
+      "accept",
+      "--root",
+      root,
+      "--json",
+      record.id
+    ]);
+    const missingReasonPayload = JSON.parse(missingReason.stdout);
+
+    assert.equal(missingReason.code, 1);
+    assert.equal(missingReasonPayload.ok, false);
+    assert.match(missingReasonPayload.error.message, /reason is required/i);
 
     const accepted = await runCli([
       "accept",
@@ -60,6 +70,191 @@ test("CLI keeps boolean flags from consuming positional ids", async () => {
   }
 });
 
+test("CLI propose blocks secret-like memory without echoing text output", async () => {
+  const root = await makeTempRoot();
+  const secret = "token=memprFakecliTextShouldNotEcho1234567890";
+
+  try {
+    const result = await runCliAllowFailure([
+      "propose",
+      "--root",
+      root,
+      "--memory",
+      `api_key=${secret}`,
+      "--source-trust",
+      "trusted"
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /blocked without persistence/i);
+    assertNoEcho(result.stderr, [secret]);
+    assertNoEcho(result.stdout, [secret]);
+
+    const ledger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+    const events = await readOptional(join(root, ".mempr", "events.jsonl"));
+
+    assert.equal(ledger, null);
+    assert.equal(events, null);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("CLI propose --json blocks secret-like memory with safe audit", async () => {
+  const root = await makeTempRoot();
+  const secret = "token=memprFakecliJsonShouldNotEcho1234567890";
+
+  try {
+    const result = await runCliAllowFailure([
+      "propose",
+      "--root",
+      root,
+      "--json",
+      "--memory",
+      `api_key=${secret}`,
+      "--quote",
+      `quoted ${secret}`,
+      "--source",
+      `https://example.test/?token=${secret}`,
+      "--source-trust",
+      "trusted"
+    ]);
+    const payload = JSON.parse(result.stdout);
+    const serializedPayload = JSON.stringify(payload);
+
+    assert.equal(result.code, 1);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error.code, "MEMPR_PROPOSAL_BLOCKED");
+    assert.match(payload.error.message, /blocked without persistence/i);
+    assertNoEcho(serializedPayload, [secret]);
+    assertNoEcho(result.stderr, [secret]);
+
+    const ledger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+    const events = await readOptional(join(root, ".mempr", "events.jsonl"));
+
+    assert.equal(ledger, null);
+    assert.equal(events, null);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("CLI propose rejects invalid destination before ledger writes", async () => {
+  const root = await makeTempRoot();
+  const secret = "token=memprFakecliInvalidDestinationShouldNotEcho1234567890";
+  const destination = `https://example.test/MEMORY.md?token=${secret}`;
+
+  try {
+    const result = await runCliAllowFailure([
+      "propose",
+      "--root",
+      root,
+      "--memory",
+      "This repo uses npm.",
+      "--source-trust",
+      "trusted",
+      "--destination",
+      destination
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /invalid export destination/i);
+    assertNoEcho(result.stderr, [destination, secret]);
+    assertNoEcho(result.stdout, [destination, secret]);
+    assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), null);
+    assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), null);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json failures use consistent sanitized error payloads", async () => {
+  const root = await makeTempRoot();
+  const destinationSecret = "token=memprFakeJsonDestinationShouldNotEcho1234567890";
+  const policySecret = "token=memprFakeJsonPolicyShouldNotEcho1234567890";
+
+  try {
+    const invalidDestination = await runCliAllowFailure([
+      "export",
+      "--root",
+      root,
+      "--destination",
+      `https://example.test/MEMORY.md?token=${destinationSecret}`,
+      "--json"
+    ]);
+    const invalidDestinationPayload = JSON.parse(invalidDestination.stdout);
+
+    assert.equal(invalidDestination.code, 1);
+    assert.equal(invalidDestinationPayload.ok, false);
+    assert.equal(typeof invalidDestinationPayload.error.code, "string");
+    assert.equal(typeof invalidDestinationPayload.error.message, "string");
+    assertNoEcho(`${invalidDestination.stdout}\n${invalidDestination.stderr}`, [
+      destinationSecret
+    ]);
+
+    await mkdir(join(root, ".mempr"), { recursive: true });
+    await writeFile(join(root, ".mempr", "policy.json"), `{"autoAcceptScopes":["repo"],"malformed":"api_key=${policySecret}",`);
+    const invalidPolicy = await runCliAllowFailure([
+      "propose",
+      "--root",
+      root,
+      "--json",
+      "--memory",
+      "Policy config JSON errors must stay structured.",
+      "--source",
+      "manual",
+      "--scope",
+      "repo",
+      "--destination",
+      "MEMORY.md"
+    ]);
+    const invalidPolicyPayload = JSON.parse(invalidPolicy.stdout);
+
+    assert.equal(invalidPolicy.code, 1);
+    assert.equal(invalidPolicyPayload.ok, false);
+    assert.equal(typeof invalidPolicyPayload.error.code, "string");
+    assert.equal(typeof invalidPolicyPayload.error.message, "string");
+    assertNoEcho(`${invalidPolicy.stdout}\n${invalidPolicy.stderr}`, [policySecret]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("CLI source verification review remains JSON and sanitized", async () => {
+  const rootSecret = fakeOpenAiKey("JsonSourceVerificationRoot123456789012");
+  const secretRoot = await mkdtemp(join(tmpdir(), `${rootSecret}-`));
+
+  try {
+    const result = await runCli([
+      "propose",
+      "--root",
+      secretRoot,
+      "--json",
+      "--memory",
+      "Missing source should review instead of throwing.",
+      "--source",
+      "missing-source.txt",
+      "--source-type",
+      "file",
+      "--verify-source",
+      "--source-trust",
+      "trusted",
+      "--scope",
+      "repo",
+      "--destination",
+      "MEMORY.md"
+    ]);
+    const payload = JSON.parse(result.stdout);
+
+    assert.equal(payload.status, "pending");
+    assert.equal(payload.source.verification.status, "failed");
+    assert.match(payload.source.verification.reason, /could not be read/i);
+    assertNoEcho(`${result.stdout}\n${result.stderr}`, [rootSecret, secretRoot]);
+  } finally {
+    await rm(secretRoot, { force: true, recursive: true });
+  }
+});
+
 test("CLI list filters by status, risk, and destination", async () => {
   const root = await makeTempRoot();
 
@@ -71,7 +266,9 @@ test("CLI list filters by status, risk, and destination", async () => {
       "--memory",
       "Accepted default destination memory.",
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -134,7 +331,18 @@ test("CLI exports accepted memory after reviewed acceptance", async () => {
       "--reason",
       "Confirmed by maintainer."
     ]);
-    await runCli(["export", "--root", root, "--destination", "MEMORY.md"]);
+    const exportedJson = await runCli([
+      "export",
+      "--root",
+      root,
+      "--destination",
+      "MEMORY.md",
+      "--json"
+    ]);
+    const exportPayload = JSON.parse(exportedJson.stdout);
+
+    assert.equal(exportPayload.destination, "MEMORY.md");
+    assert.equal("outputPath" in exportPayload, false);
 
     const exported = await readFile(join(root, "MEMORY.md"), "utf8");
     assert.match(exported, /concise changelog entries/);
@@ -176,6 +384,131 @@ test("CLI check --json returns ok for consistent state", async () => {
     assert.deepEqual(getIssues(report), []);
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("CLI successful read surfaces hash non-generated legacy record ids", async () => {
+  const root = await makeTempRoot();
+  const unsafeId = "legacy_corrupt_success_id";
+
+  try {
+    await seedLegacyLedgerMigration(root, fixedLegacyAcceptedRecord({
+      id: unsafeId,
+      memory: "CLI legacy ID surface should stay usable."
+    }));
+
+    const context = JSON.parse((await runCli([
+      "context",
+      "--root",
+      root,
+      "--destination",
+      "MEMORY.md",
+      "--json"
+    ])).stdout);
+    const status = contextStatusFromPayload(JSON.parse((await runCli([
+      "context-status",
+      "--root",
+      root,
+      "--json"
+    ])).stdout));
+    const preview = JSON.parse((await runCli([
+      "export",
+      "--root",
+      root,
+      "--destination",
+      "MEMORY.md",
+      "--dry-run",
+      "--json"
+    ])).stdout);
+    const check = JSON.parse((await runCli([
+      "check",
+      "--root",
+      root,
+      "--json"
+    ])).stdout);
+    const combined = [
+      JSON.stringify(context),
+      JSON.stringify(status),
+      JSON.stringify(preview),
+      JSON.stringify(check)
+    ].join("\n");
+
+    assert.equal(context.ok, true);
+    assert.match(context.recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.match(context.records[0].id, /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.match(status.destinations[0].acceptedRecordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.match(preview.recordIds[0], /^\[MEMPR_RECORD_ID_HASH:/);
+    assert.match(preview.safe_content_preview, /\[MEMPR_RECORD_ID_HASH:/);
+    assert.equal(check.ok, true);
+    assertNoEcho(combined, [unsafeId]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("CLI read surfaces do not expose control-character legacy record ids", async () => {
+  for (const unsafeId of ["legacy\nid", "legacy\tid", "legacy\u007Fid"]) {
+    const root = await makeTempRoot();
+
+    try {
+      await seedLegacyLedgerMigration(root, fixedLegacyAcceptedRecord({
+        id: unsafeId,
+        memory: "CLI control ID surface should stay safe."
+      }));
+
+      const context = await runCliAllowFailure([
+        "context",
+        "--root",
+        root,
+        "--destination",
+        "MEMORY.md",
+        "--json"
+      ]);
+      const status = await runCli([
+        "context-status",
+        "--root",
+        root,
+        "--json"
+      ]);
+      const check = await runCli([
+        "check",
+        "--root",
+        root,
+        "--json"
+      ]);
+      const exportResult = await runCliAllowFailure([
+        "export",
+        "--root",
+        root,
+        "--destination",
+        "MEMORY.md",
+        "--dry-run",
+        "--json"
+      ]);
+      const list = await runCli([
+        "list",
+        "--root",
+        root
+      ]);
+      const combined = [
+        context.stdout,
+        status.stdout,
+        check.stdout,
+        exportResult.stdout ?? "",
+        exportResult.stderr ?? "",
+        list.stdout
+      ].join("\n");
+      const listBody = list.stdout.replace(/\n$/, "");
+
+      assert.match(combined, /\[MEMPR_RECORD_ID_HASH:[0-9a-f]{16}\]/);
+      assertNoEcho(combined, [
+        unsafeId,
+        JSON.stringify(unsafeId).slice(1, -1)
+      ]);
+      assert.doesNotMatch(listBody, /[\u0000-\u0009\u000B\u000C\u000E-\u001F\u007F]/);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
   }
 });
 
@@ -351,7 +684,9 @@ test("CLI context-status exact destination filter reports blockers without write
       "--quote",
       expiredQuote,
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -367,7 +702,9 @@ test("CLI context-status exact destination filter reports blockers without write
       "--memory",
       freshMemory,
       "--source",
-      "tsconfig.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -411,7 +748,9 @@ test("CLI context-status exact destination filter reports blockers without write
       "--memory",
       otherDestinationMemory,
       "--source",
-      "AGENTS.md",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -476,7 +815,9 @@ test("CLI context-status --json ignores read-context permission expiry and relat
       "--memory",
       anchorMemory,
       "--source",
-      "AGENTS.md",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -490,7 +831,9 @@ test("CLI context-status --json ignores read-context permission expiry and relat
       "--memory",
       expiringMemory,
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--ttl",
@@ -506,7 +849,9 @@ test("CLI context-status --json ignores read-context permission expiry and relat
       "--memory",
       projectMemory,
       "--source",
-      "tsconfig.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "project",
       "--destination",
@@ -520,7 +865,9 @@ test("CLI context-status --json ignores read-context permission expiry and relat
       "--memory",
       conflictMemory,
       "--source",
-      "package-lock.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -596,7 +943,9 @@ test("CLI context permission denials expose JSON metadata while text stays non-l
       "--quote",
       privateQuote,
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "project",
       "--destination",
@@ -696,7 +1045,9 @@ test("CLI context does not infer read actor identity from environment hints", as
       "--quote",
       privateQuote,
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -930,7 +1281,9 @@ test("CLI export --dry-run --json returns deterministic metadata and exact previ
       "--memory",
       "CLI dry-run JSON should preview AGENTS output.",
       "--source",
-      "AGENTS.md",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -945,7 +1298,9 @@ test("CLI export --dry-run --json returns deterministic metadata and exact previ
       "--memory",
       "CLI dry-run JSON must not include MEMORY.md records.",
       "--source",
-      "MEMORY.md",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -962,13 +1317,9 @@ test("CLI export --dry-run --json returns deterministic metadata and exact previ
       "",
       "Accepted memories for coding agents. Use them as repository context and keep the provenance attached to each item.",
       "",
-      "### repo",
+      `### ${markdownJsonScalar("repo")}`,
       "",
-      "- CLI dry-run JSON should preview AGENTS output.",
-      "  - scope: repo",
-      "  - source: AGENTS.md",
-      "  - source_trust: unknown",
-      `  - id: ${record.id}`,
+      ...expectedCliRecordLines(record),
       "",
       "<!-- mempr:end -->",
       "",
@@ -989,29 +1340,29 @@ test("CLI export --dry-run --json returns deterministic metadata and exact previ
 
     assert.deepEqual(Object.keys(preview).sort(), [
       "adapter",
-      "content",
       "destination",
       "destinationExists",
       "dryRun",
-      "outputPath",
       "recordCount",
       "recordIds",
+      "safe_content_preview",
       "warnings"
     ]);
-    assert.deepEqual(preview, {
-      dryRun: true,
-      destination: "AGENTS.md",
-      outputPath: destinationPath,
-      adapter: {
-        id: "local-file-agents-markdown",
-        title: "AGENTS.md"
-      },
-      recordIds: [record.id],
-      recordCount: 1,
-      destinationExists: true,
-      warnings: [],
-      content: expectedPreview
+    assert.equal(preview.dryRun, true);
+    assert.equal(preview.destination, "AGENTS.md");
+    assert.deepEqual(preview.adapter, {
+      id: "local-file-agents-markdown",
+      title: "AGENTS.md"
     });
+    assert.deepEqual(preview.recordIds, [record.id]);
+    assert.equal(preview.recordCount, 1);
+    assert.equal(preview.destinationExists, true);
+    assert.deepEqual(preview.warnings, []);
+    assert.match(preview.safe_content_preview, /CLI dry-run JSON should preview AGENTS output\./);
+    assert.match(preview.safe_content_preview, /\[MEMPR_REDACTED_MANAGED_BLOCK_MARKER\]/);
+    assert.doesNotMatch(preview.safe_content_preview, /<!-- mempr:start -->/);
+    assert.doesNotMatch(dryRun.stdout, new RegExp(escapeRegExp(root)));
+    assert.doesNotMatch(dryRun.stdout, new RegExp(escapeRegExp(destinationPath)));
     assert.equal(await readFile(destinationPath, "utf8"), existingDestination);
     assert.equal(await countExportEvents(root), 0);
   } finally {
@@ -1031,7 +1382,9 @@ test("CLI export --dry-run text clearly previews without creating destination fi
       "--memory",
       "CLI text dry-run should show the preview body.",
       "--source",
-      "package.json",
+      "manual",
+      "--source-trust",
+      "trusted",
       "--scope",
       "repo",
       "--destination",
@@ -1049,9 +1402,11 @@ test("CLI export --dry-run text clearly previews without creating destination fi
 
     assert.match(dryRun.stdout, /dry[- ]run/i);
     assert.match(dryRun.stdout, /would write/i);
-    assert.match(dryRun.stdout, new RegExp(escapeRegExp(destinationPath)));
+    assert.doesNotMatch(dryRun.stdout, new RegExp(escapeRegExp(destinationPath)));
+    assert.doesNotMatch(dryRun.stdout, new RegExp(escapeRegExp(root)));
     assert.match(dryRun.stdout, /CLI text dry-run should show the preview body\./);
-    assert.match(dryRun.stdout, /<!-- mempr:start -->/);
+    assert.match(dryRun.stdout, /\[MEMPR_REDACTED_MANAGED_BLOCK_MARKER\]/);
+    assert.doesNotMatch(dryRun.stdout, /<!-- mempr:start -->/);
     assert.doesNotMatch(dryRun.stdout, /^Exported /m);
     await assertPathMissing(destinationPath);
     assert.equal(await countExportEvents(root), 0);
@@ -1061,11 +1416,13 @@ test("CLI export --dry-run text clearly previews without creating destination fi
 });
 
 function runCli(args, options = {}) {
-  return exec("node", ["dist/cli.js", ...args], {
+  return exec(process.execPath, ["dist/cli.js", ...args], {
     env: {
       ...process.env,
       ...(options.env ?? {})
-    }
+    },
+    timeout: 5_000,
+    killSignal: "SIGKILL"
   });
 }
 
@@ -1120,7 +1477,7 @@ function assertDestinationStatus(status, destination) {
   assert(Array.isArray(destinationStatus.issues), "status issues must be an array");
   assert(Array.isArray(destinationStatus.warnings), "status warnings must be an array");
   assert.equal(Object.hasOwn(destinationStatus, "records"), false, "status must not include records");
-  assert.equal(Object.hasOwn(destinationStatus, "content"), false, "status must not include content");
+  assert.equal(Object.hasOwn(destinationStatus, "safe_content_preview"), false, "status must not include content");
   return destinationStatus;
 }
 
@@ -1174,6 +1531,66 @@ async function countExportEvents(root) {
   return events.filter((event) => event.type === "memory_exported").length;
 }
 
+function fixedLegacyAcceptedRecord({
+  id,
+  memory,
+  destination = "MEMORY.md"
+}) {
+  return {
+    schema_version: "mempr-record-v1",
+    id,
+    memory,
+    source: {
+      type: "manual",
+      uri: "manual",
+      verification: {
+        status: "not_applicable",
+        method: "manual",
+        checked_at: null,
+        reason: "Manual source."
+      }
+    },
+    source_trust: "unknown",
+    scope: "repo",
+    kind: "fact",
+    tags: [],
+    confidence: null,
+    risk: "low",
+    decision: "auto_accept",
+    decision_reason: "Legacy accepted test fixture.",
+    policy_version: "test",
+    destination,
+    status: "accepted",
+    status_reason: null,
+    reviewer: null,
+    approved_by: null,
+    last_verified_at: null,
+    last_used_at: null,
+    retention_class: null,
+    priority: null,
+    applies_to_paths: [],
+    ttl: null,
+    expires_at: null,
+    supersedes: [],
+    conflicts_with: [],
+    created_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z"
+  };
+}
+
+async function seedLegacyLedgerMigration(root, record) {
+  await mkdir(join(root, ".mempr"), { recursive: true });
+  await writeFile(join(root, ".mempr", "ledger.jsonl"), `${JSON.stringify(record)}\n`);
+  await writeFile(join(root, ".mempr", "events.jsonl"), `${JSON.stringify({
+    id: "evt_legacy_migration_fixture",
+    type: "ledger_migrated",
+    created_at: "2026-05-22T00:00:00.000Z",
+    source: "legacy_ledger_jsonl",
+    record_count: 1,
+    records: [record]
+  })}\n`);
+}
+
 async function readOptional(path) {
   try {
     return await readFile(path, "utf8");
@@ -1206,6 +1623,18 @@ function assertNoEcho(value, privateText) {
   for (const text of privateText) {
     assert.doesNotMatch(value, new RegExp(escapeRegExp(text)));
   }
+}
+
+function expectedCliRecordLines(record) {
+  return [
+    `- memory: ${markdownJsonScalar(record.memory)}`,
+    `  - scope: ${markdownJsonScalar(record.scope)}`,
+    `  - source: ${markdownJsonScalar(record.source.uri)}`,
+    `  - source_trust: ${markdownJsonScalar(record.source_trust)}`,
+    `  - source_verified: ${markdownJsonScalar(record.source.verification?.status ?? "unverified")}`,
+    `  - source_verification_method: ${markdownJsonScalar(record.source.verification?.method ?? "none")}`,
+    `  - id: ${markdownJsonScalar(record.id)}`
+  ];
 }
 
 function assertPermissionDeniedMetadata(metadata, expected) {

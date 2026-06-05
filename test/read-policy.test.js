@@ -13,6 +13,7 @@ import {
   proposeMemory
 } from "../dist/ledger.js";
 import { createMemprMcpServer } from "../dist/mcp-server.js";
+import { fakeOpenAiKey } from "./helpers/fake-secrets.js";
 
 const exec = promisify(execFile);
 const CLI_PATH = "dist/cli.js";
@@ -24,6 +25,7 @@ test("read policy gate is dormant when .mempr/read-policy.json is absent", async
     const record = await proposeMemory({
       memory: "No-policy reads keep existing default behavior.",
       scope: "repo",
+      sourceTrust: "trusted",
       destination: "MEMORY.md"
     }, root);
 
@@ -48,7 +50,8 @@ test("signed local-key principal can satisfy deterministic read policy", async (
       memory: privateMemory,
       quote: privateQuote,
       scope: "repo",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       destination: "MEMORY.md"
     }, root);
     const principal = await installPrincipal(root, "agent-a");
@@ -97,6 +100,7 @@ test("read policy deny rules take precedence over matching allows", async () => 
     const record = await proposeMemory({
       memory: privateMemory,
       scope: "repo",
+      sourceTrust: "trusted",
       destination: "MEMORY.md"
     }, root);
     const principal = await installPrincipal(root, "agent-a");
@@ -146,6 +150,7 @@ test("CLI and MCP read auth arguments satisfy the same signed request", async ()
     const record = await proposeMemory({
       memory: privateMemory,
       scope: "repo",
+      sourceTrust: "trusted",
       destination: "MEMORY.md"
     }, root);
     const principal = await installPrincipal(root, "agent-a");
@@ -217,6 +222,84 @@ test("CLI and MCP read auth arguments satisfy the same signed request", async ()
     } finally {
       process.chdir(previousCwd);
     }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("secret-like read-policy matcher values fail closed without leaking", async () => {
+  const root = await makeTempRoot();
+  const secret = fakeOpenAiKey("ReadPolicyMatcherShouldNotLeak1234567890");
+
+  try {
+    await proposeMemory({
+      memory: "Malformed read policy should deny without leaking matcher data.",
+      scope: "repo",
+      sourceTrust: "trusted",
+      destination: "MEMORY.md"
+    }, root);
+    await writeReadPolicy(root, [{
+      effect: "allow",
+      principals: ["agent-a"],
+      surfaces: ["read_context"],
+      destinations: ["MEMORY.md"],
+      scopes: [secret]
+    }]);
+
+    const denied = await assembleReadContext({
+      destination: "MEMORY.md",
+      scope: "repo"
+    }, root);
+    const serialized = JSON.stringify(denied);
+
+    assert.equal(denied.ok, false);
+    assert.equal(denied.issues[0].code, "read_policy_malformed");
+    assertDeniedNoContent(serialized, [secret]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("secret-like signed read nonce fails closed without leaking", async () => {
+  const root = await makeTempRoot();
+  const secret = fakeOpenAiKey("ReadNonceShouldNotLeak1234567890");
+  const privateMemory = "Secret-like nonce denial must not leak memory.";
+
+  try {
+    await proposeMemory({
+      memory: privateMemory,
+      scope: "repo",
+      sourceTrust: "trusted",
+      destination: "MEMORY.md"
+    }, root);
+    const principal = await installPrincipal(root, "agent-a");
+    await writeReadPolicy(root, [{
+      effect: "allow",
+      principals: ["agent-a"],
+      surfaces: ["read_context"],
+      destinations: ["MEMORY.md"],
+      scopes: ["repo"]
+    }]);
+    const auth = signRead(principal, {
+      action: "read",
+      surface: "read_context",
+      resource: "context",
+      destination: "MEMORY.md",
+      scopes: ["repo"]
+    }, {
+      nonce: secret
+    });
+
+    const denied = await assembleReadContext({
+      destination: "MEMORY.md",
+      scope: "repo",
+      readAccess: auth
+    }, root);
+    const serialized = JSON.stringify(denied);
+
+    assert.equal(denied.ok, false);
+    assert.equal(denied.issues[0].code, "read_identity_invalid");
+    assertDeniedNoContent(serialized, [secret, privateMemory]);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

@@ -1,17 +1,20 @@
-import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { normalizeLocalFileDestination } from "./export-adapters.js";
 import {
   verifySignedReadRequest
 } from "./identity.js";
+import {
+  assertNoPersistentSecretLikeContent
+} from "./safety.js";
+import {
+  safeReadOptionalStoreFile
+} from "./store-paths.js";
 import type {
   ReadAuthInput,
   SignedReadRequest
 } from "./identity.js";
 import type { ReadPermissionSurface } from "./read-permissions.js";
 
-const LEDGER_DIR = ".mempr";
 const READ_POLICY_FILE = "read-policy.json";
 
 export const MEMPR_READ_POLICY_VERSION = 1;
@@ -97,26 +100,23 @@ const READ_POLICY_SURFACES: readonly ReadPermissionSurface[] = [
 ] as const;
 
 export async function loadReadPolicy(root = process.cwd()): Promise<ReadPolicyLoadResult> {
-  const file = join(root, LEDGER_DIR, READ_POLICY_FILE);
-  let raw: string;
-
   try {
-    raw = await readFile(file, "utf8");
+    const file = await safeReadOptionalStoreFile(root, READ_POLICY_FILE);
+
+    if (!file.exists) {
+      return { exists: false, ok: false };
+    }
+
+    return {
+      exists: true,
+      ok: true,
+      policy: normalizeReadPolicy(JSON.parse(file.content))
+    };
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { exists: false, ok: false };
     }
 
-    return { exists: true, ok: false };
-  }
-
-  try {
-    return {
-      exists: true,
-      ok: true,
-      policy: normalizeReadPolicy(JSON.parse(raw))
-    };
-  } catch {
     return { exists: true, ok: false };
   }
 }
@@ -269,9 +269,10 @@ function normalizeReadPolicyRule(value: unknown): ReadPolicyRule {
     throw new Error("Invalid read policy effect.");
   }
 
-  return {
+  const effect: ReadPolicyEffect = value.effect;
+  const rule: ReadPolicyRule = {
     id: normalizeOptionalText(value.id),
-    effect: value.effect,
+    effect,
     principals: normalizeMatcherList(value.principals),
     actions: normalizeActions(value.actions),
     surfaces: normalizeSurfaces(value.surfaces),
@@ -280,6 +281,10 @@ function normalizeReadPolicyRule(value: unknown): ReadPolicyRule {
     scopes: normalizeMatcherList(value.scopes),
     recordIds: normalizeMatcherList(value.recordIds)
   };
+
+  assertNoPersistentSecretLikeContent(readPolicyRuleFields(rule), "Read policy contains unsafe content.");
+
+  return rule;
 }
 
 function readPolicyRuleMatches(
@@ -411,6 +416,25 @@ function normalizeMatcherList(value: unknown): string[] | undefined {
   }
 
   return normalized;
+}
+
+function readPolicyRuleFields(rule: ReadPolicyRule): Array<{ field: string; text: string }> {
+  return [
+    textField("read-policy.rule.id", rule.id),
+    ...listFields("read-policy.rule.principals", rule.principals),
+    ...listFields("read-policy.rule.resources", rule.resources),
+    ...listFields("read-policy.rule.destinations", rule.destinations),
+    ...listFields("read-policy.rule.scopes", rule.scopes),
+    ...listFields("read-policy.rule.recordIds", rule.recordIds)
+  ].filter((field): field is { field: string; text: string } => field !== undefined);
+}
+
+function textField(field: string, value: string | undefined): { field: string; text: string } | undefined {
+  return value === undefined ? undefined : { field, text: value };
+}
+
+function listFields(field: string, values: readonly string[] | undefined): Array<{ field: string; text: string }> {
+  return (values ?? []).map((text, index) => ({ field: `${field}[${index}]`, text }));
 }
 
 function normalizeReadAccessOptions(

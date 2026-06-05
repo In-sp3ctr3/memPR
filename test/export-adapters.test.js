@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -11,11 +11,16 @@ import {
 } from "../dist/ledger.js";
 import { readEvents } from "../dist/events.js";
 import {
+  markdownJsonScalar,
+  MEMPR_MANAGED_BLOCK_END,
+  MEMPR_MANAGED_BLOCK_START,
   renderAgentsMarkdownBlock,
   renderClaudeMarkdownBlock,
   renderGenericMarkdownBlock,
+  replaceManagedBlock,
   selectExportAdapter
 } from "../dist/export-adapters.js";
+import { reportableRecordId } from "../dist/safety.js";
 
 const FIXED_RECORDS = [
   fixedRecord({
@@ -110,16 +115,8 @@ test("generic Markdown managed block output is stable for fixed records", () => 
       "<!-- mempr:start -->",
       "## Accepted Memories",
       "",
-      "- This repository uses npm scripts for build and test.",
-      "  - scope: repo",
-      "  - source: package.json",
-      "  - source_trust: trusted",
-      "  - id: mem_0001_npm",
-      "- Prefer concise PR review comments.",
-      "  - scope: user",
-      "  - source: manual",
-      "  - source_trust: unknown",
-      "  - id: mem_0002_reviews",
+      ...expectedRecordLines(FIXED_RECORDS[0]),
+      ...expectedRecordLines(FIXED_RECORDS[1]),
       "",
       "<!-- mempr:end -->",
       ""
@@ -136,21 +133,13 @@ test("AGENTS.md adapter output is stable for fixed and empty record sets", () =>
       "",
       "Accepted memories for coding agents. Use them as repository context and keep the provenance attached to each item.",
       "",
-      "### repo",
+      expectedScopeHeading("repo"),
       "",
-      "- This repository uses npm scripts for build and test.",
-      "  - scope: repo",
-      "  - source: package.json",
-      "  - source_trust: trusted",
-      "  - id: mem_0001_npm",
+      ...expectedRecordLines(FIXED_RECORDS[0]),
       "",
-      "### user",
+      expectedScopeHeading("user"),
       "",
-      "- Prefer concise PR review comments.",
-      "  - scope: user",
-      "  - source: manual",
-      "  - source_trust: unknown",
-      "  - id: mem_0002_reviews",
+      ...expectedRecordLines(FIXED_RECORDS[1]),
       "",
       "<!-- mempr:end -->",
       ""
@@ -182,21 +171,13 @@ test("CLAUDE.md adapter output is stable for fixed and empty record sets", () =>
       "",
       "Accepted project context for Claude. Keep it concise, specific, and traceable.",
       "",
-      "### repo",
+      expectedScopeHeading("repo"),
       "",
-      "- This repository uses npm scripts for build and test.",
-      "  - scope: repo",
-      "  - source: package.json",
-      "  - source_trust: trusted",
-      "  - id: mem_0001_npm",
+      ...expectedRecordLines(FIXED_RECORDS[0]),
       "",
-      "### user",
+      expectedScopeHeading("user"),
       "",
-      "- Prefer concise PR review comments.",
-      "  - scope: user",
-      "  - source: manual",
-      "  - source_trust: unknown",
-      "  - id: mem_0002_reviews",
+      ...expectedRecordLines(FIXED_RECORDS[1]),
       "",
       "<!-- mempr:end -->",
       ""
@@ -228,60 +209,7 @@ test("AGENTS.md adapter groups scopes deterministically and preserves record ord
       "",
       "Accepted memories for coding agents. Use them as repository context and keep the provenance attached to each item.",
       "",
-      "### repo",
-      "",
-      "- Repo scope first input record.",
-      "  - scope: repo",
-      "  - source: repo-first.md",
-      "  - source_trust: trusted",
-      "  - id: mem_1003_repo_first",
-      "- Repo scope second input record.",
-      "  - scope: repo",
-      "  - source: repo-second.md",
-      "  - source_trust: unknown",
-      "  - id: mem_1007_repo_second",
-      "",
-      "### project",
-      "",
-      "- Project scope first input record.",
-      "  - scope: project",
-      "  - source: project-first.md",
-      "  - source_trust: unknown",
-      "  - id: mem_1004_project_first",
-      "",
-      "### user",
-      "",
-      "- User scope first input record.",
-      "  - scope: user",
-      "  - source: user-first",
-      "  - source_trust: trusted",
-      "  - id: mem_1002_user_first",
-      "- User scope second input record.",
-      "  - scope: user",
-      "  - source: user-second",
-      "  - source_trust: unknown",
-      "  - id: mem_1006_user_second",
-      "",
-      "### alpha",
-      "",
-      "- Alpha scope first input record.",
-      "  - scope: alpha",
-      "  - source: alpha-first",
-      "  - source_trust: unknown",
-      "  - id: mem_1005_alpha_first",
-      "",
-      "### zeta",
-      "",
-      "- Zeta scope first input record.",
-      "  - scope: zeta",
-      "  - source: zeta-first",
-      "  - source_trust: unknown",
-      "  - id: mem_1001_zeta_first",
-      "- Zeta scope second input record.",
-      "  - scope: zeta",
-      "  - source: zeta-second",
-      "  - source_trust: trusted",
-      "  - id: mem_1008_zeta_second",
+      ...expectedGroupedRecordLines(),
       "",
       "<!-- mempr:end -->",
       ""
@@ -298,60 +226,7 @@ test("CLAUDE.md adapter groups scopes deterministically and preserves record ord
       "",
       "Accepted project context for Claude. Keep it concise, specific, and traceable.",
       "",
-      "### repo",
-      "",
-      "- Repo scope first input record.",
-      "  - scope: repo",
-      "  - source: repo-first.md",
-      "  - source_trust: trusted",
-      "  - id: mem_1003_repo_first",
-      "- Repo scope second input record.",
-      "  - scope: repo",
-      "  - source: repo-second.md",
-      "  - source_trust: unknown",
-      "  - id: mem_1007_repo_second",
-      "",
-      "### project",
-      "",
-      "- Project scope first input record.",
-      "  - scope: project",
-      "  - source: project-first.md",
-      "  - source_trust: unknown",
-      "  - id: mem_1004_project_first",
-      "",
-      "### user",
-      "",
-      "- User scope first input record.",
-      "  - scope: user",
-      "  - source: user-first",
-      "  - source_trust: trusted",
-      "  - id: mem_1002_user_first",
-      "- User scope second input record.",
-      "  - scope: user",
-      "  - source: user-second",
-      "  - source_trust: unknown",
-      "  - id: mem_1006_user_second",
-      "",
-      "### alpha",
-      "",
-      "- Alpha scope first input record.",
-      "  - scope: alpha",
-      "  - source: alpha-first",
-      "  - source_trust: unknown",
-      "  - id: mem_1005_alpha_first",
-      "",
-      "### zeta",
-      "",
-      "- Zeta scope first input record.",
-      "  - scope: zeta",
-      "  - source: zeta-first",
-      "  - source_trust: unknown",
-      "  - id: mem_1001_zeta_first",
-      "- Zeta scope second input record.",
-      "  - scope: zeta",
-      "  - source: zeta-second",
-      "  - source_trust: trusted",
-      "  - id: mem_1008_zeta_second",
+      ...expectedGroupedRecordLines(),
       "",
       "<!-- mempr:end -->",
       ""
@@ -369,13 +244,12 @@ test("AGENTS.md and CLAUDE.md scope headings collapse unsafe whitespace", () => 
     createdAt: "2026-05-21T12:00:00.000Z"
   });
   const groupedBody = [
-    "### team ### Injected Heading with spacing rollout",
+    expectedScopeHeading("team ### Injected Heading with spacing rollout"),
     "",
-    "- Scope heading sanitizer keeps injected headings as text.",
-    "  - scope: team ### Injected Heading with spacing rollout",
-    "  - source: manual",
-    "  - source_trust: unknown",
-    "  - id: mem_2001_scope_whitespace",
+    ...expectedRecordLines({
+      ...unsafeScopeRecord,
+      scope: "team ### Injected Heading with spacing rollout"
+    }),
     "",
     "<!-- mempr:end -->",
     ""
@@ -445,6 +319,7 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
       {
         memory: "Use npm run test before merging adapter work.",
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -454,6 +329,7 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
       {
         memory: "Nested agent guidance must stay scoped to docs/AGENTS.md.",
         source: "docs/AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/AGENTS.md"
       },
@@ -463,6 +339,7 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
       {
         memory: "Keep Claude context concise and project-specific.",
         source: "CLAUDE.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "CLAUDE.md"
       },
@@ -472,6 +349,7 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
       {
         memory: "Generic Markdown memory must stay out of named adapter exports.",
         source: "MEMORY.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -496,13 +374,9 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
         "",
         "Accepted memories for coding agents. Use them as repository context and keep the provenance attached to each item.",
         "",
-        "### repo",
+        expectedScopeHeading("repo"),
         "",
-        "- Use npm run test before merging adapter work.",
-        "  - scope: repo",
-        "  - source: AGENTS.md",
-        "  - source_trust: unknown",
-        `  - id: ${agentsRecord.id}`,
+        ...expectedRecordLines(agentsRecord),
         "",
         "<!-- mempr:end -->",
         ""
@@ -516,13 +390,9 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
         "",
         "Accepted project context for Claude. Keep it concise, specific, and traceable.",
         "",
-        "### repo",
+        expectedScopeHeading("repo"),
         "",
-        "- Keep Claude context concise and project-specific.",
-        "  - scope: repo",
-        "  - source: CLAUDE.md",
-        "  - source_trust: unknown",
-        `  - id: ${claudeRecord.id}`,
+        ...expectedRecordLines(claudeRecord),
         "",
         "<!-- mempr:end -->",
         ""
@@ -536,10 +406,10 @@ test("exportMarkdown writes adapter-specific AGENTS.md and CLAUDE.md output with
     assert.doesNotMatch(claudeExport, new RegExp(escapeRegExp(genericRecord.memory)));
     assert.equal(exportEvents.length, 2);
     assert.equal(exportEvents[0].destination, "AGENTS.md");
-    assert.equal(exportEvents[0].output_path, agentsPath);
+    assert.equal(Object.hasOwn(exportEvents[0], "output_path"), false);
     assert.deepEqual(exportEvents[0].record_ids, [agentsRecord.id]);
     assert.equal(exportEvents[1].destination, "CLAUDE.md");
-    assert.equal(exportEvents[1].output_path, claudePath);
+    assert.equal(Object.hasOwn(exportEvents[1], "output_path"), false);
     assert.deepEqual(exportEvents[1].record_ids, [claudeRecord.id]);
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -555,6 +425,7 @@ test("exportMarkdown rejects unsafe destinations before file or export-event sid
       {
         memory: "Accepted record exists before unsafe export attempts.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -572,7 +443,18 @@ test("exportMarkdown rejects unsafe destinations before file or export-event sid
       ["file scheme", "file:///tmp/MEMORY.md"],
       ["null byte", "MEMORY.md\0suffix"],
       ["empty string", ""],
-      ["whitespace string", "   "]
+      ["whitespace string", "   "],
+      ["internal ledger", ".mempr/ledger.jsonl"],
+      ["internal events", ".mempr/events.jsonl"],
+      ["internal policy", ".mempr/policy.json"],
+      ["git config", ".git/config"],
+      ["git hook", ".git/hooks/post-checkout"],
+      ["dependency tree", "node_modules/foo.md"],
+      ["dist output", "dist/MEMORY.md"],
+      ["build output", "build/MEMORY.md"],
+      ["coverage output", "coverage/MEMORY.md"],
+      ["package manifest", "package.json"],
+      ["source file", "src/index.ts"]
     ];
 
     for (const [label, destination] of invalidDestinations) {
@@ -599,6 +481,7 @@ test("exportMarkdown still exports a normal nested repo-relative destination", a
       {
         memory: "Nested destination memory exports normally.",
         source: "docs/MEMORY.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/MEMORY.md"
       },
@@ -615,6 +498,60 @@ test("exportMarkdown still exports a normal nested repo-relative destination", a
     assert.equal(exportEvents.length, 1);
     assert.equal(exportEvents[0].destination, "docs/MEMORY.md");
     assert.deepEqual(exportEvents[0].record_ids, [record.id]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("exportMarkdown preserves existing destination mode", async () => {
+  const root = await makeTempRoot("mempr-export-mode-");
+  const destination = join(root, "MEMORY.md");
+
+  try {
+    await writeFile(destination, "existing\n", { mode: 0o640 });
+    await chmod(destination, 0o640);
+    await proposeMemory(
+      {
+        memory: "Export should preserve destination file mode.",
+        source: "package.json",
+        sourceTrust: "trusted",
+        scope: "repo",
+        destination: "MEMORY.md"
+      },
+      root
+    );
+
+    await exportMarkdown("MEMORY.md", root);
+
+    assert.equal((await stat(destination)).mode & 0o777, 0o640);
+    assert.match(await readFile(destination, "utf8"), /Export should preserve destination file mode/);
+  } finally {
+    await chmod(destination, 0o600).catch(() => undefined);
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("exportMarkdown appends export event only after destination write succeeds", async () => {
+  const root = await makeTempRoot("mempr-export-write-failure-");
+
+  try {
+    await mkdir(join(root, "MEMORY.md"));
+    await proposeMemory(
+      {
+        memory: "Export event must wait for destination write success.",
+        source: "package.json",
+        sourceTrust: "trusted",
+        scope: "repo",
+        destination: "MEMORY.md"
+      },
+      root
+    );
+
+    await assert.rejects(
+      exportMarkdown("MEMORY.md", root),
+      /EISDIR|ENOTDIR|ENOTEMPTY|operation not permitted|permission|destination exists|regular file/i
+    );
+    assert.equal(await countExportEvents(root), 0);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -642,6 +579,7 @@ test("exportMarkdown dry-run returns exact adapter preview without file or event
       {
         memory: "Dry-run preview should use the AGENTS adapter.",
         source: "AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -659,6 +597,7 @@ test("exportMarkdown dry-run returns exact adapter preview without file or event
       {
         memory: "Nested AGENTS memory must stay out of the root AGENTS preview.",
         source: "docs/AGENTS.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/AGENTS.md"
       },
@@ -668,6 +607,7 @@ test("exportMarkdown dry-run returns exact adapter preview without file or event
       {
         memory: "Generic Markdown memory must stay out of AGENTS preview.",
         source: "MEMORY.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -684,13 +624,9 @@ test("exportMarkdown dry-run returns exact adapter preview without file or event
       "",
       "Accepted memories for coding agents. Use them as repository context and keep the provenance attached to each item.",
       "",
-      "### repo",
+      expectedScopeHeading("repo"),
       "",
-      "- Dry-run preview should use the AGENTS adapter.",
-      "  - scope: repo",
-      "  - source: AGENTS.md",
-      "  - source_trust: unknown",
-      `  - id: ${exported.id}`,
+      ...expectedRecordLines(exported),
       "",
       "<!-- mempr:end -->",
       "",
@@ -702,17 +638,15 @@ test("exportMarkdown dry-run returns exact adapter preview without file or event
 
     assert.deepEqual(Object.keys(preview).sort(), [
       "adapter",
-      "content",
       "destination",
       "destinationExists",
-      "outputPath",
       "recordCount",
       "recordIds",
+      "safe_content_preview",
       "warnings"
     ]);
     assert.deepEqual(preview, {
       destination: "AGENTS.md",
-      outputPath: destinationPath,
       adapter: {
         id: "local-file-agents-markdown",
         title: "AGENTS.md"
@@ -721,7 +655,7 @@ test("exportMarkdown dry-run returns exact adapter preview without file or event
       recordCount: 1,
       destinationExists: true,
       warnings: [],
-      content: expectedPreview
+      safe_content_preview: expectedPreview
     });
     assert.equal(await readFile(destinationPath, "utf8"), existingDestination);
     assert.equal(await countExportEvents(root), 0);
@@ -743,6 +677,7 @@ test("exportMarkdown dry-run for nested destinations does not create parent dire
       {
         memory: "Nested dry-run preview must not create directories.",
         source: "docs/MEMORY.md",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/MEMORY.md"
       },
@@ -752,11 +687,11 @@ test("exportMarkdown dry-run for nested destinations does not create parent dire
     const preview = await previewMarkdownExport("docs/MEMORY.md", root);
 
     assert.equal(preview.destination, "docs/MEMORY.md");
-    assert.equal(preview.outputPath, join(root, "docs", "MEMORY.md"));
+    assert.equal(Object.hasOwn(preview, "outputPath"), false);
     assert.equal(preview.adapter.id, "local-file-generic-markdown");
     assert.equal(preview.destinationExists, false);
     assert.deepEqual(preview.recordIds, [record.id]);
-    assert.match(preview.content, /Nested dry-run preview must not create directories\./);
+    assert.match(preview.safe_content_preview, /Nested dry-run preview must not create directories\./);
     await assertPathMissing(join(root, "docs"));
     await assertPathMissing(join(root, "docs", "MEMORY.md"));
     assert.equal(await countExportEvents(root), 0);
@@ -777,6 +712,7 @@ test("exportMarkdown dry-run reuses TTL, relationship, and destination blockers 
       {
         memory: "Expired dry-run memory must block preview.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         ttl: "2000-01-01"
@@ -796,6 +732,7 @@ test("exportMarkdown dry-run reuses TTL, relationship, and destination blockers 
       {
         memory: "Accepted dry-run conflicted record.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -805,6 +742,7 @@ test("exportMarkdown dry-run reuses TTL, relationship, and destination blockers 
       {
         memory: "Accepted dry-run conflict record.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         conflictsWith: [conflicted.id]
@@ -825,6 +763,7 @@ test("exportMarkdown dry-run reuses TTL, relationship, and destination blockers 
       {
         memory: "Accepted dry-run superseded record.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -834,6 +773,7 @@ test("exportMarkdown dry-run reuses TTL, relationship, and destination blockers 
       {
         memory: "Accepted dry-run replacement record.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md",
         supersedes: [superseded.id]
@@ -859,6 +799,7 @@ test("exportMarkdown dry-run reuses TTL, relationship, and destination blockers 
       {
         memory: "Accepted memory exists before invalid dry-run destination.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -906,6 +847,47 @@ function fixedRecord({
     created_at: createdAt,
     updated_at: createdAt
   };
+}
+
+function expectedRecordLines(record) {
+  return [
+    `- memory: ${markdownJsonScalar(record.memory)}`,
+    `  - scope: ${markdownJsonScalar(record.scope)}`,
+    `  - source: ${markdownJsonScalar(record.source.uri)}`,
+    `  - source_trust: ${markdownJsonScalar(record.source_trust)}`,
+    `  - source_verified: ${markdownJsonScalar(record.source.verification?.status ?? "unverified")}`,
+    `  - source_verification_method: ${markdownJsonScalar(record.source.verification?.method ?? "none")}`,
+    `  - id: ${markdownJsonScalar(reportableRecordId(record.id))}`
+  ];
+}
+
+function expectedScopeHeading(scope) {
+  return `### ${markdownJsonScalar(scope)}`;
+}
+
+function expectedGroupedRecordLines() {
+  const groups = [
+    ["repo", [GROUPED_RECORDS[2], GROUPED_RECORDS[6]]],
+    ["project", [GROUPED_RECORDS[3]]],
+    ["user", [GROUPED_RECORDS[1], GROUPED_RECORDS[5]]],
+    ["alpha", [GROUPED_RECORDS[4]]],
+    ["zeta", [GROUPED_RECORDS[0], GROUPED_RECORDS[7]]]
+  ];
+  const lines = [];
+
+  for (const [scope, records] of groups) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+
+    lines.push(expectedScopeHeading(scope), "");
+
+    for (const record of records) {
+      lines.push(...expectedRecordLines(record));
+    }
+  }
+
+  return lines;
 }
 
 async function countExportEvents(root) {

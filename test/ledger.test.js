@@ -4,21 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  acceptMemoryWithRelationships,
   exportMarkdown,
   listRecords,
   proposeMemory,
   updateRecordStatus
 } from "../dist/ledger.js";
+import { MemoryProposalBlockedError } from "../dist/errors.js";
+import {
+  readEvents,
+  replayEvents,
+  verifyEventIntegrity
+} from "../dist/events.js";
 import { CURRENT_POLICY_VERSION } from "../dist/policy.js";
 
-test("auto-accepts low-risk repo memory", async () => {
+test("auto-accepts trusted low-risk repo memory", async () => {
   const root = await makeTempRoot();
 
   try {
     const record = await proposeMemory(
       {
         memory: "This repo uses npm for package management.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -34,7 +42,7 @@ test("auto-accepts low-risk repo memory", async () => {
   }
 });
 
-test("stores v0.1 record schema fields with documented defaults", async () => {
+test("stores v1 record schema fields with documented defaults", async () => {
   const root = await makeTempRoot();
 
   try {
@@ -47,6 +55,9 @@ test("stores v0.1 record schema fields with documented defaults", async () => {
     const records = await listRecords({}, root);
 
     assert.deepEqual(Object.keys(record).sort(), [
+      "applies_to_paths",
+      "approved_by",
+      "confidence",
       "conflicts_with",
       "created_at",
       "decision",
@@ -54,33 +65,59 @@ test("stores v0.1 record schema fields with documented defaults", async () => {
       "destination",
       "expires_at",
       "id",
+      "kind",
+      "last_used_at",
+      "last_verified_at",
       "memory",
       "policy_version",
+      "priority",
+      "retention_class",
+      "reviewer",
       "risk",
+      "schema_version",
       "scope",
       "source",
       "source_trust",
       "status",
       "status_reason",
       "supersedes",
+      "tags",
       "ttl",
       "updated_at"
     ]);
     assert.equal(records.length, 1);
     assert.equal(records[0].id, record.id);
+    assert.equal(record.schema_version, "mempr-record-v1");
     assert.match(record.id, /^mem_/);
     assert.equal(record.memory, "The maintainer prefers concise review comments.");
     assert.deepEqual(record.source, {
       type: "manual",
-      uri: "manual"
+      uri: "manual",
+      verification: {
+        status: "not_applicable",
+        method: "manual",
+        checked_at: record.source.verification.checked_at,
+        reason: "Manual source has no verifiable backing document."
+      }
     });
+    assert.doesNotThrow(() => new Date(record.source.verification.checked_at).toISOString());
     assert.equal(record.source_trust, "unknown");
     assert.equal(record.scope, "user");
+    assert.equal(record.kind, "fact");
+    assert.deepEqual(record.tags, []);
+    assert.equal(record.confidence, null);
     assert.equal(record.risk, "medium");
     assert.equal(record.decision, "review");
     assert.equal(record.policy_version, CURRENT_POLICY_VERSION);
     assert.equal(record.status, "pending");
     assert.equal(record.status_reason ?? null, null);
+    assert.equal(record.reviewer, null);
+    assert.equal(record.approved_by, null);
+    assert.equal(record.last_verified_at, null);
+    assert.equal(record.last_used_at, null);
+    assert.equal(record.retention_class, null);
+    assert.equal(record.priority, null);
+    assert.deepEqual(record.applies_to_paths, []);
     assert.deepEqual(record.supersedes, []);
     assert.deepEqual(record.conflicts_with, []);
     assert.match(record.decision_reason, /needs review/i);
@@ -149,24 +186,228 @@ test("infers source type from source URI and normalizes explicit source type", a
   }
 });
 
-test("rejects secret-like memory", async () => {
+test("blocks secret-like memory without raw persistence", async () => {
   const root = await makeTempRoot();
+  const secret = "token=memprFakethisShouldNeverBecomeDurableMemory123";
 
   try {
-    const record = await proposeMemory(
-      {
-        memory: "The API key is sk-thisShouldNeverBecomeDurableMemory123.",
-        source: "conversation",
-        scope: "user"
-      },
-      root
+    await assert.rejects(
+      proposeMemory(
+        {
+          memory: `The API key is ${secret}.`,
+          source: "conversation",
+          scope: "user"
+        },
+        root
+      ),
+      (error) => {
+        assert(error instanceof MemoryProposalBlockedError);
+        assert.equal(error.code, "MEMPR_PROPOSAL_BLOCKED");
+        assert.equal(error.audit.decision, "block_no_persist");
+        assert.match(error.audit.memory_hash, /^[0-9a-f]{64}$/);
+        assert.match(error.audit.memory_preview, /\[MEMPR_REDACTED_SECRET\]/);
+        assertNoEcho(JSON.stringify(error.audit), [secret]);
+        return true;
+      }
     );
 
-    assert.equal(record.status, "rejected");
-    assert.equal(record.risk, "high");
-    assert.match(record.decision_reason, /secret|credential/i);
+    assert.deepEqual(await listRecords({}, root), []);
+
+    const ledger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+    const eventContent = await readOptional(join(root, ".mempr", "events.jsonl"));
+    const events = await readEvents(root);
+
+    assert.equal(ledger, null);
+    assert.equal(eventContent, null);
+    assert.deepEqual(events, []);
+    assert.deepEqual(replayEvents(events), []);
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("blocks secret-like persistent proposal metadata without raw persistence", async () => {
+  const cases = [
+    {
+      field: "destination",
+      input: (secret) => ({ destination: `docs/${secret}.md` }),
+      auditHashField: "destination_hash",
+      auditPreviewField: "destination_preview"
+    },
+    {
+      field: "scope",
+      input: (secret) => ({ scope: `repo-${secret}` }),
+      auditHashField: "scope_hash",
+      auditPreviewField: "scope_preview"
+    },
+    {
+      field: "tags",
+      input: (secret) => ({ tags: ["ops", secret] })
+    },
+    {
+      field: "retentionClass",
+      input: (secret) => ({ retentionClass: `retain-${secret}` })
+    },
+    {
+      field: "appliesToPaths",
+      input: (secret) => ({ appliesToPaths: [`docs/${secret}.md`] })
+    },
+    {
+      field: "supersedes",
+      input: (secret) => ({ supersedes: [secret] })
+    },
+    {
+      field: "conflictsWith",
+      input: (secret) => ({ conflictsWith: [secret] })
+    },
+    {
+      field: "gitCommit",
+      input: (secret) => ({ gitCommit: secret })
+    },
+    {
+      field: "sourceHash",
+      input: (secret) => ({ sourceHash: secret })
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot();
+    const secret = `token=memprFake${testCase.field}ShouldNotPersist1234567890`;
+
+    try {
+      await assert.rejects(
+        proposeMemory(
+          {
+            memory: "Use npm for package management.",
+            source: "manual",
+            sourceTrust: "trusted",
+            scope: "repo",
+            destination: "MEMORY.md",
+            ...testCase.input(secret)
+          },
+          root
+        ),
+        (error) => {
+          assert(error instanceof MemoryProposalBlockedError);
+          assert.equal(error.audit.decision, "block_no_persist");
+
+          if (testCase.auditHashField) {
+            assert.match(error.audit[testCase.auditHashField], /^[0-9a-f]{64}$/);
+            assert.match(error.audit[testCase.auditPreviewField], /\[MEMPR_REDACTED_SECRET\]/);
+          }
+
+          assertNoEcho(JSON.stringify(error.audit), [secret]);
+          return true;
+        },
+        testCase.field
+      );
+
+      const ledger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+      const eventContent = await readOptional(join(root, ".mempr", "events.jsonl"));
+      const events = await readEvents(root);
+
+      assert.equal(ledger, null, testCase.field);
+      assert.equal(eventContent, null, testCase.field);
+      assert.deepEqual(events, [], testCase.field);
+      assert.deepEqual(await listRecords({}, root), [], testCase.field);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("rejects secret-like shape-invalid proposal metadata before writes without echo", async () => {
+  const cases = [
+    {
+      field: "ttl",
+      input: (secret) => ({ ttl: `api_key=${secret}` }),
+      pattern: /ttl|expiry|expiration/i
+    },
+    {
+      field: "kind",
+      input: (secret) => ({ kind: `api_key=${secret}` }),
+      pattern: /memory kind/i
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot();
+    const secret = `token=memprFake${testCase.field}ShouldNotPersist1234567890`;
+
+    try {
+      await assert.rejects(
+        proposeMemory(
+          {
+            memory: "Use npm for package management.",
+            source: "manual",
+            sourceTrust: "trusted",
+            scope: "repo",
+            destination: "MEMORY.md",
+            ...testCase.input(secret)
+          },
+          root
+        ),
+        (error) => {
+          assert(error instanceof Error);
+          assert.match(error.message, testCase.pattern);
+          assertNoEcho(error.message, [secret]);
+          return true;
+        },
+        testCase.field
+      );
+
+      assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), null);
+      assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), null);
+      assert.deepEqual(await listRecords({}, root), [], testCase.field);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("rejects invalid proposal destinations before ledger writes", async () => {
+  const invalidDestinations = [
+    "../evil.md",
+    "/tmp/evil.md",
+    "https://example.com/memory.md",
+    "dir//file.md",
+    "dir/./file.md",
+    ".mempr/ledger.jsonl",
+    ".mempr/events.jsonl",
+    ".mempr/policy.json",
+    ".git/config",
+    ".git/hooks/post-checkout",
+    "node_modules/foo.md",
+    "dist/MEMORY.md",
+    "build/MEMORY.md",
+    "coverage/MEMORY.md",
+    "package.json",
+    "src/index.ts"
+  ];
+
+  for (const destination of invalidDestinations) {
+    const root = await makeTempRoot();
+
+    try {
+      await assert.rejects(
+        proposeMemory(
+          {
+            memory: "This repo uses npm.",
+            sourceTrust: "trusted",
+            destination
+          },
+          root
+        ),
+        /destination|path|traversal|absolute|scheme|segment/i,
+        destination
+      );
+
+      assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), null);
+      assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), null);
+      assert.deepEqual(await listRecords({}, root), []);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
   }
 });
 
@@ -202,14 +443,15 @@ test("applies deterministic policy order for unsafe, sensitive, explicit risk, a
     const inferredLow = await proposeMemory(
       {
         memory: "This project uses TypeScript for source files.",
-        source: "tsconfig.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "project"
       },
       root
     );
 
     assert.equal(unsafe.risk, "high");
-    assert.equal(unsafe.decision, "reject");
+    assert.equal(unsafe.decision, "reject_audited");
     assert.equal(unsafe.status, "rejected");
     assert.match(unsafe.decision_reason, /unsafe/i);
 
@@ -237,7 +479,8 @@ test("exports accepted memories and leaves pending memories out", async () => {
     await proposeMemory(
       {
         memory: "This repo uses npm for package management.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -274,7 +517,8 @@ test("filters exports by exact destination path", async () => {
     await proposeMemory(
       {
         memory: "Memory for the default destination.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -283,7 +527,8 @@ test("filters exports by exact destination path", async () => {
     await proposeMemory(
       {
         memory: "Memory for agent instructions.",
-        source: "AGENTS.md",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "AGENTS.md"
       },
@@ -292,7 +537,8 @@ test("filters exports by exact destination path", async () => {
     await proposeMemory(
       {
         memory: "Memory for a nested destination.",
-        source: "docs/MEMORY.md",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "docs/MEMORY.md"
       },
@@ -322,7 +568,8 @@ test("filters listed records by status, risk, and destination", async () => {
     await proposeMemory(
       {
         memory: "Accepted memory for default export.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         destination: "MEMORY.md"
       },
@@ -390,7 +637,8 @@ test("replaces the managed Markdown block idempotently", async () => {
     await proposeMemory(
       {
         memory: "Fresh accepted memory for export.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -477,6 +725,119 @@ test("requires a reviewer reason when rejecting a risky pending record", async (
   }
 });
 
+test("rejects secret-like review metadata before status writes", async () => {
+  const cases = [
+    {
+      field: "reason",
+      reason: (secret) => `approved with token ${secret}`,
+      reviewer: () => "maintainer"
+    },
+    {
+      field: "reviewer",
+      reason: () => "approved after review",
+      reviewer: (secret) => `reviewer-${secret}`
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot();
+    const secret = `token=memprFakereview${testCase.field}ShouldNotPersist1234567890`;
+
+    try {
+      const pending = await proposeMemory(
+        {
+          memory: `Pending ${testCase.field} safety review.`,
+          source: "manual",
+          risk: "medium",
+          destination: "MEMORY.md"
+        },
+        root
+      );
+      const beforeLedger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+      const beforeEvents = await readOptional(join(root, ".mempr", "events.jsonl"));
+
+      await assert.rejects(
+        updateRecordStatus(
+          pending.id,
+          "accepted",
+          testCase.reason(secret),
+          root,
+          { reviewer: testCase.reviewer(secret) }
+        ),
+        (error) => {
+          assert(error instanceof Error);
+          assert.match(error.message, /review metadata|secret-like/i);
+          assertNoEcho(error.message, [secret]);
+          return true;
+        },
+        testCase.field
+      );
+
+      assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), beforeLedger);
+      assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), beforeEvents);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("rejects secret-like relationship review metadata before relationship writes", async () => {
+  const cases = [
+    {
+      field: "reason",
+      reason: (secret) => `relationship approved with token ${secret}`,
+      reviewer: () => "maintainer"
+    },
+    {
+      field: "reviewer",
+      reason: () => "relationship approved after review",
+      reviewer: (secret) => `reviewer-${secret}`
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot();
+    const secret = `token=memprFakerelationship${testCase.field}ShouldNotPersist1234567890`;
+
+    try {
+      const pending = await proposeMemory(
+        {
+          memory: `Pending relationship ${testCase.field} safety review.`,
+          source: "manual",
+          risk: "medium",
+          destination: "MEMORY.md"
+        },
+        root
+      );
+      const beforeLedger = await readOptional(join(root, ".mempr", "ledger.jsonl"));
+      const beforeEvents = await readOptional(join(root, ".mempr", "events.jsonl"));
+
+      await assert.rejects(
+        acceptMemoryWithRelationships(
+          pending.id,
+          {
+            reason: testCase.reason(secret),
+            reviewer: testCase.reviewer(secret)
+          },
+          root
+        ),
+        (error) => {
+          assert(error instanceof Error);
+          assert.match(error.message, /relationship review metadata|secret-like/i);
+          assertNoEcho(error.message, [secret]);
+          return true;
+        },
+        testCase.field
+      );
+
+      assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), beforeLedger);
+      assert.equal(await readOptional(join(root, ".mempr", "events.jsonl")), beforeEvents);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
 test("requires an explicit reason before accepting a rejected record", async () => {
   const root = await makeTempRoot();
 
@@ -536,6 +897,28 @@ test("reports malformed ledger records without echoing record contents", async (
 
 async function makeTempRoot() {
   return mkdtemp(join(tmpdir(), "mempr-test-"));
+}
+
+async function readOptional(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function assertNoEcho(value, privateText) {
+  for (const text of privateText) {
+    assert.doesNotMatch(value, new RegExp(escapeRegExp(text)));
+  }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function countMatches(value, needle) {

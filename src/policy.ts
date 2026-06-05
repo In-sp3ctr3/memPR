@@ -1,20 +1,23 @@
 import { DEFAULT_POLICY_CONFIG } from "./policy-config.js";
 import type { PolicyConfig } from "./policy-config.js";
+import { normalizeMemoryKind } from "./memory-model.js";
+import {
+  proposalPersistentSecretFields
+} from "./persistence-safety.js";
+import {
+  scanPersistentFields
+} from "./safety.js";
+import { normalizeSourceType } from "./ledger-records.js";
 import { MEMORY_RISKS } from "./types.js";
-import type { MemoryRisk, PolicyResult, ProposeMemoryInput } from "./types.js";
+import type {
+  MemoryKind,
+  MemoryRisk,
+  MemorySourceVerification,
+  PolicyResult,
+  ProposeMemoryInput
+} from "./types.js";
 
 export const CURRENT_POLICY_VERSION = "mempr-policy-v1";
-
-const SECRET_PATTERNS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
-  /\bsk-[A-Za-z0-9_-]{20,}\b/,
-  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bAIza[0-9A-Za-z_-]{35}\b/,
-  /\bxox[baprs]-[0-9A-Za-z-]{20,}\b/,
-  /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{20,}\b/i,
-  /\b(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|pwd|refresh[_-]?token|secret|token)\b\s*[:=]\s*['"]?[^'"\s]{8,}/i
-];
 
 const UNSAFE_INSTRUCTION_PATTERNS = [
   /\balways\b.*\b(skip|disable|bypass|ignore)\b.*\b(security|test|check|review)\b/i,
@@ -42,6 +45,13 @@ const SENSITIVE_PATTERNS = [
   /\blegal case\b/i,
   /\b(attorney-client|lawsuit|criminal record|arrested)\b/i
 ];
+const REVIEW_ONLY_KINDS = new Set<MemoryKind>([
+  "instruction",
+  "procedure",
+  "constraint",
+  "warning"
+]);
+const STRONG_INSTRUCTION_WORDS = /\b(always|never|must|do not|skip|disable|bypass)\b/i;
 
 interface ResolvedPolicyConfig {
   denyTerms: readonly string[];
@@ -49,28 +59,31 @@ interface ResolvedPolicyConfig {
   autoAcceptScopes: readonly string[];
   defaultRisk: MemoryRisk;
   ttlRisk: MemoryRisk;
+  autoAcceptRequiresTrustedSource: boolean;
+  reviewUnknownSourceTrust: boolean;
+  autoAcceptRequiresVerifiedSource: boolean;
 }
 
 export function classifyMemory(
-  input: ProposeMemoryInput,
+  input: ProposeMemoryInput & { sourceVerification?: MemorySourceVerification },
   config?: Partial<PolicyConfig>
 ): PolicyResult {
   const explicitRisk = input.risk;
   const text = `${input.memory}\n${input.quote ?? ""}`;
   const policyConfig = resolvePolicyConfig(config);
 
-  if (SECRET_PATTERNS.some((pattern) => pattern.test(text))) {
+  if (scanPersistentFields(policySecretFields(input)).length > 0) {
     return policyResult({
       risk: "high",
-      decision: "reject",
-      reason: "Looks like a secret or credential."
+      decision: "block_no_persist",
+      reason: "Blocked without persistence because the proposal contains unsafe persistent content."
     });
   }
 
   if (UNSAFE_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(text))) {
     return policyResult({
       risk: "high",
-      decision: "reject",
+      decision: "reject_audited",
       reason: "Unsafe security-weakening standing instruction."
     });
   }
@@ -78,7 +91,7 @@ export function classifyMemory(
   if (matchesAnyTerm(text, policyConfig.denyTerms)) {
     return policyResult({
       risk: "high",
-      decision: "reject",
+      decision: "reject_audited",
       reason: "Blocked by configured memory policy."
     });
   }
@@ -99,13 +112,105 @@ export function classifyMemory(
     });
   }
 
-  const risk = explicitRisk ?? inferRisk(input, policyConfig);
+  const kind = normalizeMemoryKind(input.kind);
+  const sourceType = normalizeSourceType(input.sourceType, input.source ?? "manual");
+  const sourceVerifiedTrusted = input.sourceTrust === "trusted"
+    && input.sourceVerification?.status === "verified";
+  const kindRequiresReview = REVIEW_ONLY_KINDS.has(kind) && input.sourceTrust !== "trusted";
+  let risk = explicitRisk ?? inferRisk(input, policyConfig);
 
-  if (input.sourceTrust === "untrusted" && risk === "low") {
+  if (
+    sourceType === "file"
+    && input.sourceVerification !== undefined
+    && input.sourceVerification.status !== "verified"
+  ) {
+    return policyResult({
+      risk: "medium",
+      decision: "review",
+      reason: "File source could not be verified and requires reviewer confirmation."
+    });
+  }
+
+  if (input.sourceVerification?.status === "failed") {
+    return policyResult({
+      risk: atLeastMedium(risk),
+      decision: "review",
+      reason: "Source verification failed and requires reviewer confirmation."
+    });
+  }
+
+  if (input.verifySource === true && input.sourceVerification?.status !== "verified") {
+    return policyResult({
+      risk: atLeastMedium(risk),
+      decision: "review",
+      reason: "Source verification did not complete and requires reviewer confirmation."
+    });
+  }
+
+  if (
+    hasSourceEvidence(input)
+    && input.sourceVerification?.status !== "verified"
+    && input.sourceVerification?.status !== "not_applicable"
+  ) {
+    return policyResult({
+      risk: atLeastMedium(risk),
+      decision: "review",
+      reason: "Source verification failed and requires reviewer confirmation."
+    });
+  }
+
+  if (kind === "instruction" && STRONG_INSTRUCTION_WORDS.test(text) && !sourceVerifiedTrusted) {
+    risk = atLeastMedium(risk);
+  }
+
+  if (
+    (kind === "warning" || kind === "constraint")
+    && explicitRisk === undefined
+    && input.sourceTrust !== "trusted"
+  ) {
+    risk = atLeastMedium(risk);
+  }
+
+  if (kindRequiresReview && risk !== "high") {
+    return policyResult({
+      risk: atLeastMedium(risk),
+      decision: "review",
+      reason: "Memory kind requires reviewer confirmation for unknown or untrusted sources."
+    });
+  }
+
+  if (risk === "low" && input.sourceTrust === "untrusted") {
     return policyResult({
       risk: "medium",
       decision: "review",
       reason: "Untrusted source requires reviewer confirmation."
+    });
+  }
+
+  if (
+    risk === "low"
+    && input.sourceTrust !== "trusted"
+    && (
+      policyConfig.autoAcceptRequiresTrustedSource
+      || (input.sourceTrust === "unknown" && policyConfig.reviewUnknownSourceTrust)
+    )
+  ) {
+    return policyResult({
+      risk,
+      decision: "review",
+      reason: "Unknown source trust requires reviewer confirmation."
+    });
+  }
+
+  if (
+    risk === "low"
+    && policyConfig.autoAcceptRequiresVerifiedSource
+    && input.sourceVerification?.status !== "verified"
+  ) {
+    return policyResult({
+      risk,
+      decision: "review",
+      reason: "Source verification is required before auto-accept."
     });
   }
 
@@ -122,6 +227,19 @@ export function classifyMemory(
     decision: "review",
     reason: "Needs review before becoming durable memory."
   });
+}
+
+function policySecretFields(input: ProposeMemoryInput): Array<{ field: string; text: string }> {
+  return proposalPersistentSecretFields(input);
+}
+
+function hasSourceEvidence(input: ProposeMemoryInput): boolean {
+  return (
+    (typeof input.quote === "string" && input.quote.trim().length > 0)
+    || (typeof input.sourceHash === "string" && input.sourceHash.trim().length > 0)
+    || input.sourceLineStart !== undefined
+    || input.sourceLineEnd !== undefined
+  );
 }
 
 function policyResult(result: Omit<PolicyResult, "policyVersion">): PolicyResult {
@@ -143,6 +261,10 @@ function inferRisk(input: ProposeMemoryInput, config: ResolvedPolicyConfig): Mem
   return config.defaultRisk;
 }
 
+function atLeastMedium(risk: MemoryRisk): MemoryRisk {
+  return risk === "low" ? "medium" : risk;
+}
+
 function resolvePolicyConfig(config: Partial<PolicyConfig> | undefined): ResolvedPolicyConfig {
   return {
     denyTerms: normalizeTerms(config?.denyTerms ?? DEFAULT_POLICY_CONFIG.denyTerms),
@@ -151,7 +273,19 @@ function resolvePolicyConfig(config: Partial<PolicyConfig> | undefined): Resolve
       config?.autoAcceptScopes ?? DEFAULT_POLICY_CONFIG.autoAcceptScopes
     ),
     defaultRisk: normalizeConfigRisk(config?.defaultRisk ?? DEFAULT_POLICY_CONFIG.defaultRisk),
-    ttlRisk: normalizeConfigRisk(config?.ttlRisk ?? DEFAULT_POLICY_CONFIG.ttlRisk)
+    ttlRisk: normalizeConfigRisk(config?.ttlRisk ?? DEFAULT_POLICY_CONFIG.ttlRisk),
+    autoAcceptRequiresTrustedSource: normalizeConfigBoolean(
+      config?.autoAcceptRequiresTrustedSource
+      ?? DEFAULT_POLICY_CONFIG.autoAcceptRequiresTrustedSource
+    ),
+    reviewUnknownSourceTrust: normalizeConfigBoolean(
+      config?.reviewUnknownSourceTrust
+      ?? DEFAULT_POLICY_CONFIG.reviewUnknownSourceTrust
+    ),
+    autoAcceptRequiresVerifiedSource: normalizeConfigBoolean(
+      config?.autoAcceptRequiresVerifiedSource
+      ?? DEFAULT_POLICY_CONFIG.autoAcceptRequiresVerifiedSource
+    )
   };
 }
 
@@ -185,4 +319,12 @@ function normalizeConfigRisk(value: unknown): MemoryRisk {
   }
 
   throw new Error("Policy config risk must be low, medium, or high.");
+}
+
+function normalizeConfigBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  throw new Error("Policy config boolean values must be true or false.");
 }

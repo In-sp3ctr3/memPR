@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { MemoryProposalBlockedError } from "../dist/errors.js";
 import { readEvents } from "../dist/events.js";
 import {
   listRecords,
@@ -21,6 +22,7 @@ test("new proposals default conflict and supersession metadata across ledger and
       {
         memory: "This repo uses npm for package management.",
         source: "package.json",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -239,7 +241,8 @@ test("relationship metadata forces otherwise low-risk proposals into review", as
     const superseded = await proposeMemory(
       {
         memory: "Existing operational repo memory.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo"
       },
       root
@@ -247,7 +250,8 @@ test("relationship metadata forces otherwise low-risk proposals into review", as
     const withSupersedes = await proposeMemory(
       {
         memory: "Replacement operational repo memory.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         supersedes: [superseded.id]
       },
@@ -256,7 +260,8 @@ test("relationship metadata forces otherwise low-risk proposals into review", as
     const withConflict = await proposeMemory(
       {
         memory: "Conflicting operational repo memory.",
-        source: "package.json",
+        source: "manual",
+        sourceTrust: "trusted",
         scope: "repo",
         conflictsWith: [superseded.id]
       },
@@ -275,7 +280,7 @@ test("relationship metadata forces otherwise low-risk proposals into review", as
   }
 });
 
-test("built-in reject decisions still reject unsafe and secret content with relationship metadata", async () => {
+test("built-in reject decisions reject unsafe content and block secrets with relationship metadata", async () => {
   const root = await makeTempRoot();
 
   try {
@@ -293,22 +298,31 @@ test("built-in reject decisions still reject unsafe and secret content with rela
       },
       root
     );
-    const secret = await proposeMemory(
-      {
-        memory: "The API key is sk-phase3dSecretShouldReject1234567890.",
-        conflictsWith: [existing.id]
-      },
-      root
-    );
-
     assert.equal(unsafe.status, "rejected");
-    assert.equal(unsafe.decision, "reject");
+    assert.equal(unsafe.decision, "reject_audited");
     assert.equal(unsafe.risk, "high");
     assert.match(unsafe.decision_reason, /unsafe/i);
-    assert.equal(secret.status, "rejected");
-    assert.equal(secret.decision, "reject");
-    assert.equal(secret.risk, "high");
-    assert.match(secret.decision_reason, /secret|credential/i);
+
+    await assert.rejects(
+      proposeMemory(
+        {
+          memory: "The API key is token=memprFakephase3dSecretShouldReject1234567890.",
+          conflictsWith: [existing.id]
+        },
+        root
+      ),
+      (error) => {
+        assert(error instanceof MemoryProposalBlockedError);
+        assert.equal(error.audit.decision, "block_no_persist");
+        assert.doesNotMatch(JSON.stringify(error.audit), /token=memprFakephase3dSecretShouldReject/);
+        return true;
+      }
+    );
+
+    assert.deepEqual(
+      (await listRecords({}, root)).map((record) => record.id),
+      [existing.id, unsafe.id]
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }

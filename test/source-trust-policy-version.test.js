@@ -10,9 +10,51 @@ import {
   listRecords,
   proposeMemory
 } from "../dist/ledger.js";
-import { CURRENT_POLICY_VERSION } from "../dist/policy.js";
+import {
+  classifyMemory,
+  CURRENT_POLICY_VERSION
+} from "../dist/policy.js";
 
 const exec = promisify(execFile);
+
+test("policy blocks secret-like proposals without persistence", () => {
+  const secret = "token=memprFakepolicyBlockWithoutPersistence1234567890";
+
+  for (const input of [
+    {
+      memory: `api_key=${secret}`
+    },
+    {
+      memory: "Normal memory text.",
+      quote: `api_key=${secret}`
+    },
+    {
+      memory: "Normal memory text.",
+      source: `https://example.com?token=${secret}`
+    }
+  ]) {
+    const result = classifyMemory(input);
+
+    assert.equal(result.risk, "high");
+    assert.equal(result.decision, "block_no_persist");
+    assert.match(result.reason, /blocked without persistence/i);
+    assert.doesNotMatch(result.reason, new RegExp(escapeRegExp(secret)));
+  }
+
+  const nonWeakenable = classifyMemory(
+    {
+      memory: `api_key=${secret}`
+    },
+    {
+      blockSecretsWithoutPersistence: false
+    }
+  );
+
+  assert.equal(nonWeakenable.risk, "high");
+  assert.equal(nonWeakenable.decision, "block_no_persist");
+  assert.match(nonWeakenable.reason, /blocked without persistence/i);
+  assert.doesNotMatch(nonWeakenable.reason, new RegExp(escapeRegExp(secret)));
+});
 
 test("new proposals default source trust and record current policy version", async () => {
   const root = await makeTempRoot();
@@ -41,14 +83,14 @@ test("new proposals default source trust and record current policy version", asy
   }
 });
 
-test("API source trust gates untrusted auto-accept without elevating trusted sources", async () => {
+test("API source trust gates unknown and untrusted auto-accept without elevating trusted sources", async () => {
   const root = await makeTempRoot();
 
   try {
     const baseline = await proposeMemory(
       {
         memory: "This project stores TypeScript sources under src.",
-        source: "tsconfig.json",
+        source: "manual",
         scope: "project"
       },
       root
@@ -56,7 +98,7 @@ test("API source trust gates untrusted auto-accept without elevating trusted sou
     const trusted = await proposeMemory(
       {
         memory: "This project stores TypeScript sources under src.",
-        source: "tsconfig.json",
+        source: "manual",
         scope: "project",
         sourceTrust: "trusted"
       },
@@ -65,7 +107,7 @@ test("API source trust gates untrusted auto-accept without elevating trusted sou
     const untrusted = await proposeMemory(
       {
         memory: "This project stores TypeScript sources under src.",
-        source: "tsconfig.json",
+        source: "manual",
         scope: "project",
         sourceTrust: "untrusted"
       },
@@ -74,7 +116,7 @@ test("API source trust gates untrusted auto-accept without elevating trusted sou
     const unknown = await proposeMemory(
       {
         memory: "This project stores TypeScript sources under src.",
-        source: "tsconfig.json",
+        source: "manual",
         scope: "project",
         sourceTrust: "unknown"
       },
@@ -85,11 +127,17 @@ test("API source trust gates untrusted auto-accept without elevating trusted sou
     assert.equal(untrusted.source_trust, "untrusted");
     assert.equal(unknown.source_trust, "unknown");
 
-    for (const record of [trusted, unknown]) {
-      assert.equal(record.risk, baseline.risk);
-      assert.equal(record.decision, baseline.decision);
-      assert.equal(record.status, baseline.status);
-    }
+    assert.equal(baseline.risk, "low");
+    assert.equal(baseline.decision, "review");
+    assert.equal(baseline.status, "pending");
+    assert.match(baseline.decision_reason, /unknown source trust/i);
+    assert.equal(trusted.risk, "low");
+    assert.equal(trusted.decision, "auto_accept");
+    assert.equal(trusted.status, "accepted");
+    assert.equal(unknown.risk, "low");
+    assert.equal(unknown.decision, "review");
+    assert.equal(unknown.status, "pending");
+    assert.match(unknown.decision_reason, /unknown source trust/i);
     assert.equal(untrusted.risk, "medium");
     assert.equal(untrusted.decision, "review");
     assert.equal(untrusted.status, "pending");
@@ -99,7 +147,7 @@ test("API source trust gates untrusted auto-accept without elevating trusted sou
   }
 });
 
-test("CLI source trust gates untrusted auto-accept without elevating trusted sources", async () => {
+test("CLI source trust gates unknown and untrusted auto-accept without elevating trusted sources", async () => {
   const root = await makeTempRoot();
 
   try {
@@ -111,7 +159,7 @@ test("CLI source trust gates untrusted auto-accept without elevating trusted sou
       "--memory",
       "This repo stores package metadata in package.json.",
       "--source",
-      "package.json",
+      "manual",
       "--scope",
       "repo"
     ]);
@@ -123,7 +171,7 @@ test("CLI source trust gates untrusted auto-accept without elevating trusted sou
       "--memory",
       "This repo stores package metadata in package.json.",
       "--source",
-      "package.json",
+      "manual",
       "--scope",
       "repo",
       "--source-trust",
@@ -137,7 +185,7 @@ test("CLI source trust gates untrusted auto-accept without elevating trusted sou
       "--memory",
       "This repo stores package metadata in package.json.",
       "--source",
-      "package.json",
+      "manual",
       "--scope",
       "repo",
       "--source-trust",
@@ -150,8 +198,13 @@ test("CLI source trust gates untrusted auto-accept without elevating trusted sou
 
     assert.equal(trustedRecord.source_trust, "trusted");
     assert.equal(untrustedRecord.source_trust, "untrusted");
-    assert.equal(trustedRecord.risk, baselineRecord.risk);
-    assert.equal(trustedRecord.decision, baselineRecord.decision);
+    assert.equal(baselineRecord.risk, "low");
+    assert.equal(baselineRecord.decision, "review");
+    assert.equal(baselineRecord.status, "pending");
+    assert.match(baselineRecord.decision_reason, /unknown source trust/i);
+    assert.equal(trustedRecord.risk, "low");
+    assert.equal(trustedRecord.decision, "auto_accept");
+    assert.equal(trustedRecord.status, "accepted");
     assert.equal(untrustedRecord.risk, "medium");
     assert.equal(untrustedRecord.decision, "review");
     assert.equal(untrustedRecord.status, "pending");

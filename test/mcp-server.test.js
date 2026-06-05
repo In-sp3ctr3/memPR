@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { closeChildProcess, hasExited } from "./helpers/process-cleanup.js";
 import {
   MCP_PROTOCOL_VERSION,
   MEMPR_MCP_RESOURCES,
@@ -31,10 +31,11 @@ const KNOWN_LOG_LEVELS = [
 test("MCP stdio initialize returns the reviewed protocol version and capabilities", async (t) => {
   const probe = await startProbe(t);
   const initialized = await initialize(probe);
+  const pkg = JSON.parse(await readFile(join(REPO_ROOT, "package.json"), "utf8"));
 
   assert.equal(initialized.protocolVersion, MCP_PROTOCOL_VERSION);
   assert.equal(typeof initialized.serverInfo?.name, "string");
-  assert.equal(typeof initialized.serverInfo?.version, "string");
+  assert.equal(initialized.serverInfo?.version, pkg.version);
   assert.equal(typeof initialized.capabilities?.tools, "object");
   assert.equal(typeof initialized.capabilities?.resources, "object");
   assert.equal(typeof initialized.capabilities?.logging, "object");
@@ -125,6 +126,7 @@ test("MCP stdio resources/list only exposes mempr:// resources", async (t) => {
   for (const resource of response.result.resources) {
     assertMemprUri(resource.uri);
     assert.equal(resource.mimeType, "application/json");
+    assert.equal(typeof resource._meta?.["mempr.dev/authorizationScope"], "string");
   }
 
   const contextResource = response.result.resources.find((resource) => {
@@ -133,6 +135,7 @@ test("MCP stdio resources/list only exposes mempr:// resources", async (t) => {
   assert(contextResource, "Expected default read-context resource");
   assert.equal(contextResource.name, "context");
   assert.equal(contextResource.mimeType, "application/json");
+  assert.equal(contextResource._meta["mempr.dev/authorizationScope"], "mempr.records.read");
 
   const contextsResource = response.result.resources.find((resource) => {
     return resource.uri === "mempr://contexts";
@@ -140,6 +143,13 @@ test("MCP stdio resources/list only exposes mempr:// resources", async (t) => {
   assert(contextsResource, "Expected context-status resource");
   assert.equal(contextsResource.name, "contexts");
   assert.equal(contextsResource.mimeType, "application/json");
+  assert.equal(contextsResource._meta["mempr.dev/authorizationScope"], "mempr.records.read");
+
+  const policyResource = response.result.resources.find((resource) => {
+    return resource.uri === "mempr://policy";
+  });
+  assert(policyResource, "Expected policy resource");
+  assert.equal(policyResource._meta["mempr.dev/authorizationScope"], "mempr.records.admin");
 });
 
 test("MCP stdio resources/templates/list only exposes mempr:// templates", async (t) => {
@@ -157,6 +167,7 @@ test("MCP stdio resources/templates/list only exposes mempr:// templates", async
   for (const template of response.result.resourceTemplates) {
     assertMemprUri(template.uriTemplate);
     assert.equal(template.mimeType, "application/json");
+    assert.equal(typeof template._meta?.["mempr.dev/authorizationScope"], "string");
   }
 
   const contextTemplate = response.result.resourceTemplates.find((template) => {
@@ -165,6 +176,7 @@ test("MCP stdio resources/templates/list only exposes mempr:// templates", async
   assert(contextTemplate, "Expected read-context destination template");
   assert.equal(contextTemplate.name, "context-destination");
   assert.equal(contextTemplate.mimeType, "application/json");
+  assert.equal(contextTemplate._meta["mempr.dev/authorizationScope"], "mempr.records.read");
 
   const contextsTemplate = response.result.resourceTemplates.find((template) => {
     return template.uriTemplate === "mempr://contexts/{destination}";
@@ -172,6 +184,13 @@ test("MCP stdio resources/templates/list only exposes mempr:// templates", async
   assert(contextsTemplate, "Expected context-status destination template");
   assert.equal(contextsTemplate.name, "contexts-destination");
   assert.equal(contextsTemplate.mimeType, "application/json");
+  assert.equal(contextsTemplate._meta["mempr.dev/authorizationScope"], "mempr.records.read");
+
+  const reviewTemplate = response.result.resourceTemplates.find((template) => {
+    return template.uriTemplate === "mempr://records/{id}/review";
+  });
+  assert(reviewTemplate, "Expected record review template");
+  assert.equal(reviewTemplate._meta["mempr.dev/authorizationScope"], "mempr.review.read");
 });
 
 test("MCP stdio logging/setLevel accepts known MCP log levels", async (t) => {
@@ -481,20 +500,10 @@ class StdioMcpProbe {
   }
 
   async close() {
-    if (this.child.exitCode !== null || this.child.killed) {
-      return;
-    }
+    await closeChildProcess(this.child);
+  }
 
-    this.child.stdin.end();
-    await Promise.race([once(this.child, "exit"), delay(250)]);
-
-    if (this.child.exitCode === null && !this.child.killed) {
-      this.child.kill("SIGTERM");
-      await Promise.race([once(this.child, "exit"), delay(250)]);
-    }
-
-    if (this.child.exitCode === null && !this.child.killed) {
-      this.child.kill("SIGKILL");
-    }
+  hasExited() {
+    return this.exit !== undefined || hasExited(this.child);
   }
 }

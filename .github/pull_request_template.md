@@ -17,6 +17,9 @@
 - [ ] I updated docs for CLI, API, MCP, policy, adapter, or file-format changes.
 - [ ] I checked that denied reads do not expose memory text or policy internals.
 - [ ] I ran `npm run build`, `npm run lint`, `npm test`, and `git diff --check`.
+- [ ] If this PR changes durable agent instructions, I used `mempr propose` / `mempr review` instead of editing managed blocks by hand.
+- [ ] `mempr guard --destination AGENTS.md` passes when applicable.
+- [ ] Proposed memories include source/provenance where possible.
 
 ## Notes
 

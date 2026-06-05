@@ -46,13 +46,15 @@ test("acceptMemoryWithRelationships accepts replacement and retires superseded a
   try {
     const old = await proposeMemory({
       memory: "Old accepted memory should be retired.",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       scope: "repo",
       destination: "MEMORY.md"
     }, root);
     const replacement = await proposeMemory({
       memory: "Replacement accepted memory should export.",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       scope: "repo",
       destination: "MEMORY.md",
       supersedes: [old.id]
@@ -102,13 +104,15 @@ test("relationship acceptance requires override evidence for accepted conflicts"
   try {
     const conflicting = await proposeMemory({
       memory: "Accepted conflicting memory.",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       scope: "repo",
       destination: "MEMORY.md"
     }, root);
     const candidate = await proposeMemory({
       memory: "Candidate with accepted conflict.",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       scope: "repo",
       destination: "MEMORY.md",
       conflictsWith: [conflicting.id]
@@ -146,12 +150,14 @@ test("CLI accept can retire superseded records with explicit evidence", async ()
   try {
     const old = await proposeMemory({
       memory: "Old CLI memory should be retired.",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       scope: "repo"
     }, root);
     const replacement = await proposeMemory({
       memory: "New CLI memory should be accepted.",
-      source: "package.json",
+      source: "manual",
+      sourceTrust: "trusted",
       scope: "repo",
       supersedes: [old.id]
     }, root);

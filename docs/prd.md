@@ -144,7 +144,8 @@ Shipped v0.1 behavior:
 - canonical `ttl` / `expires_at` metadata on memory records
 - stale accepted-record blocking at export time
 - `pending`, `accepted`, `rejected` statuses
-- deterministic policy decisions: `auto_accept`, `review`, `reject`
+- deterministic policy decisions: `auto_accept`, `review`, `reject_audited`,
+  `block_no_persist`
 - generic Markdown managed block export
 - exact destination filtering
 - accepted-memory scanning at read-context and export boundaries
@@ -2976,12 +2977,13 @@ Do not start too early:
 - graph traversal, incoming-link relationship policy, or active retirement
   before separate relationship-resolution decisions exist
 
-### R1-R11 Local-First 1.0 Completion
+### R1-R11 Local-First Completion
 
-R1-R11 are shipped for the local-first 1.0 boundary. The release remains scoped
-to local files, explicit review, deterministic policy, self-hosted transport, and
-credential-gated adapters. It does not claim hosted SaaS, automatic redaction,
-third-party store security, legal retention, or compliance-grade audit behavior.
+R1-R11 define the local-first 1.0 release boundary. The boundary remains scoped
+to local files, explicit review, deterministic policy, self-hosted transport,
+and credential-gated adapters. It does not claim hosted SaaS, automatic
+redaction, third-party store security, legal retention, or compliance-grade
+audit behavior.
 
 R1 shipped core: audit integrity and replay proof.
 
@@ -3070,10 +3072,10 @@ R10 shipped core: self-hosted MCP HTTP transport.
   HTTP authorization proof.
 - Hosted deployment and SaaS security claims require a separate review.
 
-R11 shipped core: local-first 1.0 release hardening.
+R11 shipped core: local-first release hardening.
 
-- Sets package version `1.0.0` with `mempr`, `mempr-mcp`, and
-  `mempr-mcp-http` bins.
+- R11 sets package version `1.0.0` after the safety gate is revalidated.
+- Keeps `mempr`, `mempr-mcp`, and `mempr-mcp-http` bins.
 - Adds package dry-run smoke tests, migration guide, release checklist, security
   checklist, and deprecation policy.
 - Freezes claims to local-first behavior and explicitly excludes hosted SaaS,
@@ -3111,7 +3113,8 @@ Deliverables:
 
 Exit criteria:
 
-- MemPR can be released as a credible 1.0 local-first memory write-governance tool.
+- MemPR can be released as a credible local-first memory write-governance tool
+  once current safety, package, and documentation gates pass.
 
 Do not start too early:
 

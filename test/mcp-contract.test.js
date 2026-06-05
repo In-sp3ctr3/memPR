@@ -13,6 +13,8 @@ import {
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
 const KNOWN_SCOPES = new Set([
   "mempr.records.read",
+  "mempr.records.admin",
+  "mempr.review.read",
   "mempr.relationships.read",
   "mempr.proposals.write",
   "mempr.review.write",
@@ -139,7 +141,9 @@ test("MCP tool contracts use safe names, schemas, scopes, and confirmation marke
     assert.deepEqual(disallowed, [], `${tool.name} exposes generic file/resource input(s)`);
 
     if (
-      tool.name === "mempr.review"
+      tool.name === "mempr.propose"
+      || tool.name === "mempr.propose_from_observation"
+      || tool.name === "mempr.review"
       || tool.name === "mempr.export"
       || tool.name === "mempr.live.sync"
     ) {
@@ -158,6 +162,13 @@ test("MCP tool contracts use safe names, schemas, scopes, and confirmation marke
     "destination",
     "readAccess"
   ]);
+  assert.equal(Object.hasOwn(previewTool.outputSchema.properties ?? {}, "outputPath"), false);
+
+  for (const toolName of ["mempr.inspect", "mempr.history", "mempr.request_human_review"]) {
+    const tool = MEMPR_MCP_TOOLS.find((candidate) => candidate.name === toolName);
+    assert(tool);
+    assert.equal(tool.authorizationScope, "mempr.review.read");
+  }
 
   const contextTool = MEMPR_MCP_TOOLS.find((tool) => tool.name === "mempr.context");
   assert(contextTool);
@@ -250,9 +261,13 @@ test("MCP tool contracts use safe names, schemas, scopes, and confirmation marke
     "mempr.inspect",
     "mempr.list",
     "mempr.live.sync",
+    "mempr.preview_memory_diff",
     "mempr.propose",
+    "mempr.propose_from_observation",
     "mempr.relationships",
-    "mempr.review"
+    "mempr.request_human_review",
+    "mempr.review",
+    "mempr.suggest"
   ]);
 });
 
@@ -260,12 +275,14 @@ test("MCP contract keeps resources constrained to mempr URIs", () => {
   for (const resource of MEMPR_MCP_RESOURCES) {
     assert(resource.uri.startsWith("mempr://"), resource.uri);
     assert.equal(resource.mimeType, "application/json");
+    assert(KNOWN_SCOPES.has(resource.authorizationScope));
     assert.doesNotMatch(resource.uri, /file:\/\/|https?:\/\/|\.\./);
   }
 
   for (const template of MEMPR_MCP_RESOURCE_TEMPLATES) {
     assert(template.uriTemplate.startsWith("mempr://"), template.uriTemplate);
     assert.equal(template.mimeType, "application/json");
+    assert(KNOWN_SCOPES.has(template.authorizationScope));
     assert.doesNotMatch(template.uriTemplate, /file:\/\/|https?:\/\/|\.\.|\{path\}/);
   }
 
@@ -274,24 +291,40 @@ test("MCP contract keeps resources constrained to mempr URIs", () => {
   });
   assert(contextResource, "Expected default read-context resource");
   assert.equal(contextResource.name, "context");
+  assert.equal(contextResource.authorizationScope, "mempr.records.read");
 
   const contextsResource = MEMPR_MCP_RESOURCES.find((resource) => {
     return resource.uri === "mempr://contexts";
   });
   assert(contextsResource, "Expected context-status resource");
   assert.equal(contextsResource.name, "contexts");
+  assert.equal(contextsResource.authorizationScope, "mempr.records.read");
+
+  const policyResource = MEMPR_MCP_RESOURCES.find((resource) => {
+    return resource.uri === "mempr://policy";
+  });
+  assert(policyResource, "Expected policy resource");
+  assert.equal(policyResource.authorizationScope, "mempr.records.admin");
 
   const contextTemplate = MEMPR_MCP_RESOURCE_TEMPLATES.find((template) => {
     return template.uriTemplate === "mempr://context/{destination}";
   });
   assert(contextTemplate, "Expected read-context destination template");
   assert.equal(contextTemplate.name, "context-destination");
+  assert.equal(contextTemplate.authorizationScope, "mempr.records.read");
 
   const contextsTemplate = MEMPR_MCP_RESOURCE_TEMPLATES.find((template) => {
     return template.uriTemplate === "mempr://contexts/{destination}";
   });
   assert(contextsTemplate, "Expected context-status destination template");
   assert.equal(contextsTemplate.name, "contexts-destination");
+  assert.equal(contextsTemplate.authorizationScope, "mempr.records.read");
+
+  const reviewTemplate = MEMPR_MCP_RESOURCE_TEMPLATES.find((template) => {
+    return template.uriTemplate === "mempr://records/{id}/review";
+  });
+  assert(reviewTemplate, "Expected record review template");
+  assert.equal(reviewTemplate.authorizationScope, "mempr.review.read");
 });
 
 test("MCP read-context contracts expose permission scope constraint only on context input", () => {

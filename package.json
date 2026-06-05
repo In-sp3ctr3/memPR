@@ -4,6 +4,19 @@
   "description": "Pull requests for AI memory.",
   "license": "MIT",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp-server.d.ts",
+      "default": "./dist/mcp-server.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "mempr": "./dist/cli.js",
     "mempr-mcp": "./dist/mcp-stdio.js",
@@ -12,13 +25,43 @@
   "files": [
     "dist",
     "README.md",
+    "docs/assets/mempr-readme-header.png",
+    "docs/assets/mempr-mascot.png",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/*.test.js"
+    "test": "npm run build && npm run test:safety && npm run test:core && npm run test:mcp && npm run test:cli && npm run test:package",
+    "test:safety": "node scripts/run-node-tests.mjs --suite safety test/safety-boundary.test.js test/redaction.test.js test/export-safety.test.js test/destination-operation-safety.test.js test/internal-store-safety.test.js test/provenance.test.js test/diagnostics-scanner.test.js",
+    "test:safety:boundary": "node --test --test-concurrency=1 --test-timeout=30000 test/safety-boundary.test.js",
+    "test:safety:redaction": "node --test --test-concurrency=1 --test-timeout=30000 test/redaction.test.js",
+    "test:safety:export": "node --test --test-concurrency=1 --test-timeout=30000 test/export-safety.test.js",
+    "test:safety:destination": "node --test --test-concurrency=1 --test-timeout=30000 test/destination-operation-safety.test.js",
+    "test:safety:store": "node --test --test-concurrency=1 --test-timeout=30000 test/internal-store-safety.test.js",
+    "test:safety:provenance": "node --test --test-concurrency=1 --test-timeout=30000 test/provenance.test.js",
+    "test:safety:diagnostics": "node --test --test-concurrency=1 --test-timeout=30000 test/diagnostics-scanner.test.js",
+    "test:core": "node scripts/run-node-tests.mjs --suite core test/ledger.test.js test/events.test.js test/consistency.test.js test/migration.test.js test/storage.test.js test/locking.test.js test/ttl-export.test.js test/conflict-supersession.test.js test/conflict-export-governance.test.js test/relationship-lifecycle.test.js test/read-policy.test.js test/read-permissions.test.js test/memory-model.test.js",
+    "test:mcp": "node scripts/run-node-tests.mjs --suite mcp test/mcp-contract.test.js test/mcp-server.test.js test/mcp-readonly.test.js test/mcp-mutations.test.js test/mcp-http.test.js",
+    "test:mcp:contract": "node --test --test-concurrency=1 --test-timeout=30000 test/mcp-contract.test.js",
+    "test:mcp:server": "node --test --test-concurrency=1 --test-timeout=30000 test/mcp-server.test.js",
+    "test:mcp:readonly": "node --test --test-concurrency=1 --test-timeout=30000 test/mcp-readonly.test.js",
+    "test:mcp:mutations": "node --test --test-concurrency=1 --test-timeout=30000 test/mcp-mutations.test.js",
+    "test:mcp:http": "node --test --test-concurrency=1 --test-timeout=30000 test/mcp-http.test.js",
+    "test:cli": "node scripts/run-node-tests.mjs --suite cli test/cli.test.js test/review-ux.test.js test/history-ux.test.js test/live-adapters.test.js test/policy-config.test.js test/source-trust-policy-version.test.js test/review-workflow.test.js test/suggest.test.js",
+    "test:cli:main": "node --test --test-concurrency=1 --test-timeout=30000 test/cli.test.js",
+    "test:cli:review-ux": "node --test --test-concurrency=1 --test-timeout=30000 test/review-ux.test.js",
+    "test:cli:history-ux": "node --test --test-concurrency=1 --test-timeout=30000 test/history-ux.test.js",
+    "test:cli:live-adapters": "node --test --test-concurrency=1 --test-timeout=30000 test/live-adapters.test.js",
+    "test:cli:policy-config": "node --test --test-concurrency=1 --test-timeout=30000 test/policy-config.test.js",
+    "test:cli:source-trust": "node --test --test-concurrency=1 --test-timeout=30000 test/source-trust-policy-version.test.js",
+    "test:cli:review-workflow": "node --test --test-concurrency=1 --test-timeout=30000 test/review-workflow.test.js",
+    "test:cli:suggest": "node --test --test-concurrency=1 --test-timeout=30000 test/suggest.test.js",
+    "test:package": "node --test --test-concurrency=1 --test-timeout=30000 test/package-smoke.test.js",
+    "release:check": "npm ci && npm run build && npm run lint && npm test && npm pack --dry-run --json",
+    "release:assert-clean": "sh -c 'test -z \"$(git status --porcelain)\"'",
+    "archive:source": "npm run release:assert-clean && git archive --format zip --output mempr-source.zip HEAD"
   },
   "keywords": [
     "ai-agents",

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createMemprMcpServer } from "./mcp-server.js";
@@ -7,35 +8,19 @@ import {
   listMcpToolContracts
 } from "./mcp-contract.js";
 import type { McpAuthorizationScope } from "./mcp-contract.js";
+import { authorizationScopeForMemprResourceUri } from "./mcp-resources.js";
+import { loadConfig } from "./mcp-http-config.js";
+import {
+  isRecord,
+  readBody,
+  writeJson
+} from "./mcp-http-io.js";
+import type { HttpToken } from "./mcp-http-types.js";
 
-const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 3927;
-const DEFAULT_PATH = "/mcp";
 const REQUIRED_SCOPES = new Set(MEMPR_MCP_AUTHORIZATION.http.scopes);
 
-interface HttpToken {
-  token: string;
-  subject: string;
-  audience: string;
-  scopes: string[];
-  issuer?: string;
-  expiresAt?: string;
-}
-
-interface HttpConfig {
-  host: string;
-  port: number;
-  endpointPath: string;
-  resource: string;
-  authorizationServers: string[];
-  allowedOrigins: string[];
-  allowedHosts: string[];
-  rateLimitPerMinute: number;
-  tokens: HttpToken[];
-}
-
 const config = loadConfig();
-const mcp = createMemprMcpServer();
+const mcp = createMemprMcpServer({ root: config.root });
 const toolScopes = new Map(listMcpToolContracts().map((tool) => [tool.name, tool.authorizationScope]));
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -126,7 +111,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
-  const body = await readBody(request);
+  const bodyResult = await readBody(request, config.maxBodyBytes);
+
+  if (!bodyResult.ok) {
+    writeJson(response, 413, {
+      error: "payload_too_large"
+    });
+    return;
+  }
+
+  const body = bodyResult.body;
   let message: unknown;
 
   try {
@@ -175,7 +169,13 @@ function authenticate(request: IncomingMessage):
   const rawToken = typeof authorization === "string" && authorization.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length).trim()
     : "";
-  const token = config.tokens.find((candidate) => candidate.token === rawToken);
+  let token: HttpToken | undefined;
+
+  for (const candidate of config.tokens) {
+    if (tokenMatches(candidate.token, rawToken) && token === undefined) {
+      token = candidate;
+    }
+  }
 
   if (!token || token.audience !== config.resource || tokenExpired(token)) {
     return {
@@ -221,7 +221,19 @@ function requiredScopesForMessage(message: unknown): Set<McpAuthorizationScope> 
   }
 
   if (message.method === "resources/read") {
-    return new Set(["mempr.records.read"]);
+    const uri = isRecord(message.params) && typeof message.params.uri === "string"
+      ? message.params.uri
+      : undefined;
+
+    if (!uri) {
+      return new Set(["mempr.records.read"]);
+    }
+
+    try {
+      return new Set([authorizationScopeForMemprResourceUri(uri)]);
+    } catch {
+      return new Set(["mempr.records.read"]);
+    }
   }
 
   if (message.method === "tools/call" && isRecord(message.params) && typeof message.params.name === "string") {
@@ -309,85 +321,10 @@ function tokenExpired(token: HttpToken): boolean {
   return Number.isNaN(expiresAt) || expiresAt <= Date.now();
 }
 
-function loadConfig(): HttpConfig {
-  const host = process.env.MEMPR_MCP_HTTP_HOST ?? DEFAULT_HOST;
-  const port = Number(process.env.MEMPR_MCP_HTTP_PORT ?? DEFAULT_PORT);
-  const endpointPath = process.env.MEMPR_MCP_HTTP_PATH ?? DEFAULT_PATH;
-  const resource = process.env.MEMPR_MCP_HTTP_RESOURCE
-    ?? `http://${host}:${Number.isFinite(port) ? port : DEFAULT_PORT}${endpointPath}`;
-
-  return {
-    host,
-    port: Number.isFinite(port) ? port : DEFAULT_PORT,
-    endpointPath,
-    resource,
-    authorizationServers: csv(process.env.MEMPR_MCP_HTTP_AUTH_SERVERS),
-    allowedOrigins: csv(process.env.MEMPR_MCP_HTTP_ALLOWED_ORIGINS, [
-      `http://${host}:${Number.isFinite(port) ? port : DEFAULT_PORT}`,
-      resource
-    ]),
-    allowedHosts: csv(process.env.MEMPR_MCP_HTTP_ALLOWED_HOSTS, [
-      `${host}:${Number.isFinite(port) ? port : DEFAULT_PORT}`,
-      new URL(resource).host
-    ]),
-    rateLimitPerMinute: Number(process.env.MEMPR_MCP_HTTP_RATE_LIMIT ?? "120"),
-    tokens: parseTokens(process.env.MEMPR_MCP_HTTP_TOKENS)
-  };
+function tokenDigest(value: string): Buffer {
+  return createHash("sha256").update(value).digest();
 }
 
-function parseTokens(value: string | undefined): HttpToken[] {
-  if (!value) {
-    return [];
-  }
-
-  const parsed = JSON.parse(value) as unknown;
-
-  if (!Array.isArray(parsed)) {
-    throw new Error("MEMPR_MCP_HTTP_TOKENS must be a JSON array.");
-  }
-
-  return parsed.map((entry) => {
-    if (!isRecord(entry) || typeof entry.token !== "string" || typeof entry.subject !== "string") {
-      throw new Error("MEMPR_MCP_HTTP_TOKENS entries require token and subject.");
-    }
-
-    return {
-      token: entry.token,
-      subject: entry.subject,
-      audience: typeof entry.audience === "string" ? entry.audience : "",
-      issuer: typeof entry.issuer === "string" ? entry.issuer : undefined,
-      scopes: Array.isArray(entry.scopes)
-        ? entry.scopes.filter((scope): scope is string => typeof scope === "string")
-        : [],
-      expiresAt: typeof entry.expiresAt === "string" ? entry.expiresAt : undefined
-    };
-  });
-}
-
-function csv(value: string | undefined, fallback: string[] = []): string[] {
-  if (!value) {
-    return fallback;
-  }
-
-  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
-}
-
-async function readBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
-  response.statusCode = status;
-  response.setHeader("Content-Type", "application/json");
-  response.end(JSON.stringify(value));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function tokenMatches(candidate: string, supplied: string): boolean {
+  return timingSafeEqual(tokenDigest(candidate), tokenDigest(supplied));
 }

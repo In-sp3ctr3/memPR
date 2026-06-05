@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
-import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -9,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
 import { MCP_PROTOCOL_VERSION } from "../dist/mcp-contract.js";
+import { closeChildProcess } from "./helpers/process-cleanup.js";
 
 const exec = promisify(execFile);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,6 +75,82 @@ test("MCP propose with confirm true writes one record and memory_proposed event"
   assertJsonRpcOnlyStdout(probe);
 });
 
+test("MCP propose blocks secret-like memory with safe audit output", async (t) => {
+  const { probe, root } = await startInitializedProbe(t);
+  const secret = "token=memprFakemcpMutationShouldNotEcho1234567890";
+
+  const result = assertToolResult(await callTool(probe, "mempr.propose", {
+    confirm: true,
+    memory: `api_key=${secret}`,
+    quote: `quoted ${secret}`,
+    source: `https://example.test/?token=${secret}`,
+    sourceTrust: "trusted",
+    destination: "MEMORY.md"
+  }), {
+    isError: true
+  });
+  const serialized = JSON.stringify(result.structuredContent);
+  const events = parseJsonl(await readOptional(join(root, ".mempr", "events.jsonl")));
+
+  assert.equal(result.structuredContent.error.code, "MEMPR_PROPOSAL_BLOCKED");
+  assert.match(result.structuredContent.error.message, /blocked without persistence/i);
+  assert.equal(result.structuredContent.audit.decision, "block_no_persist");
+  assert.match(result.structuredContent.audit.memory_hash, /^[0-9a-f]{64}$/);
+  assert.match(result.structuredContent.audit.memory_preview, /\[MEMPR_REDACTED_SECRET\]/);
+  assertNoEcho(serialized, [secret]);
+  assertNoEcho(toolText(result), [secret]);
+  assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), null);
+  assert.deepEqual(events, []);
+  assertJsonRpcOnlyStdout(probe);
+});
+
+test("MCP propose blocks secret-like persistent metadata with safe audit output", async (t) => {
+  const cases = [
+    {
+      field: "destination",
+      args: (secret) => ({ destination: `docs/${secret}.md` })
+    },
+    {
+      field: "tags",
+      args: (secret) => ({ tags: ["mcp", secret] })
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot(`mempr-mcp-secret-${testCase.field}-`);
+    const probe = await startInitializedProbeForRoot(root);
+    const secret = `token=memprFakemcp${testCase.field}ShouldNotEcho1234567890`;
+
+    t.after(async () => {
+      await probe.close();
+      await rm(root, { force: true, recursive: true });
+    });
+
+    const result = assertToolResult(await callTool(probe, "mempr.propose", {
+      confirm: true,
+      memory: "MCP metadata proposal must be blocked safely.",
+      source: "manual",
+      sourceType: "manual",
+      sourceTrust: "trusted",
+      scope: "repo",
+      destination: "MEMORY.md",
+      ...testCase.args(secret)
+    }), {
+      isError: true
+    });
+    const serialized = JSON.stringify(result.structuredContent);
+    const events = parseJsonl(await readOptional(join(root, ".mempr", "events.jsonl")));
+
+    assert.equal(result.structuredContent.error.code, "MEMPR_PROPOSAL_BLOCKED");
+    assert.equal(result.structuredContent.audit.decision, "block_no_persist");
+    assertNoEcho(serialized, [secret]);
+    assertNoEcho(toolText(result), [secret]);
+    assert.equal(await readOptional(join(root, ".mempr", "ledger.jsonl")), null);
+    assert.deepEqual(events, []);
+    assertJsonRpcOnlyStdout(probe);
+  }
+});
+
 test("MCP review requires confirmation and reason before mutating", async (t) => {
   const root = await makeTempRoot("mempr-mcp-review-gates-");
   const pending = await proposePending(root, "Pending review gate memory.");
@@ -125,6 +201,102 @@ test("MCP review requires confirmation and reason before mutating", async (t) =>
   }
 
   assertJsonRpcOnlyStdout(probe);
+});
+
+test("MCP review rejects secret-like review metadata without writes", async (t) => {
+  const cases = [
+    {
+      field: "reason",
+      args: (pending, secret) => ({
+        confirm: true,
+        id: pending.id,
+        decision: "accept",
+        reason: `accepted with token ${secret}`
+      })
+    },
+    {
+      field: "reviewer",
+      args: (pending, secret) => ({
+        confirm: true,
+        id: pending.id,
+        decision: "accept",
+        reason: "accepted after review",
+        reviewer: `reviewer-${secret}`
+      })
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot(`mempr-mcp-review-secret-${testCase.field}-`);
+    const pending = await proposePending(root, `MCP review ${testCase.field} secret candidate.`);
+    const probe = await startInitializedProbeForRoot(root);
+    const before = await readWriteSnapshot(root);
+    const secret = `token=memprFakemcpReview${testCase.field}ShouldNotEcho1234567890`;
+
+    t.after(async () => {
+      await probe.close();
+      await rm(root, { force: true, recursive: true });
+    });
+
+    const result = assertToolResult(
+      await callTool(probe, "mempr.review", testCase.args(pending, secret)),
+      { isError: true }
+    );
+
+    assert.match(toolText(result), /secret-like|review metadata/i);
+    assertNoEcho(toolText(result), [secret]);
+    assert.deepEqual(await readWriteSnapshot(root), before);
+    assertJsonRpcOnlyStdout(probe);
+  }
+});
+
+test("MCP relationship review rejects secret-like metadata without writes", async (t) => {
+  const cases = [
+    {
+      field: "reason",
+      args: (pending, secret) => ({
+        confirm: true,
+        id: pending.id,
+        decision: "accept",
+        reason: `relationship accepted with token ${secret}`,
+        retireSuperseded: true
+      })
+    },
+    {
+      field: "reviewer",
+      args: (pending, secret) => ({
+        confirm: true,
+        id: pending.id,
+        decision: "accept",
+        reason: "relationship accepted after review",
+        reviewer: `reviewer-${secret}`,
+        retireSuperseded: true
+      })
+    }
+  ];
+
+  for (const testCase of cases) {
+    const root = await makeTempRoot(`mempr-mcp-relationship-secret-${testCase.field}-`);
+    const pending = await proposePending(root, `MCP relationship ${testCase.field} secret candidate.`);
+    const probe = await startInitializedProbeForRoot(root);
+    const before = await readWriteSnapshot(root);
+    const secret = `token=memprFakemcpRelationship${testCase.field}ShouldNotEcho1234567890`;
+
+    t.after(async () => {
+      await probe.close();
+      await rm(root, { force: true, recursive: true });
+    });
+
+    const result = assertToolResult(
+      await callTool(probe, "mempr.review", testCase.args(pending, secret)),
+      { isError: true }
+    );
+
+    assert.match(toolText(result), /secret-like|relationship review metadata/i);
+    assertNoEcho(toolText(result), [secret]);
+    assert.deepEqual(await readWriteSnapshot(root), before);
+    assertJsonRpcOnlyStdout(probe);
+  }
 });
 
 test("MCP review with confirm true accepts and rejects through event ledger", async (t) => {
@@ -223,7 +395,8 @@ test("MCP export requires confirmation and writes managed block plus export even
     destination: "MEMORY.md"
   }));
 
-  assert.equal(exported.structuredContent.destination, join(root, "MEMORY.md"));
+  assert.equal(exported.structuredContent.destination, "MEMORY.md");
+  assert.equal("outputPath" in exported.structuredContent, false);
 
   const memoryFile = await readFile(join(root, "MEMORY.md"), "utf8");
   assert.match(memoryFile, /<!-- mempr:start -->/);
@@ -237,7 +410,7 @@ test("MCP export requires confirmation and writes managed block plus export even
 
   assert.equal(exportEvents.length, 1);
   assert.equal(exportEvents[0].destination, "MEMORY.md");
-  assert.equal(exportEvents[0].output_path, join(root, "MEMORY.md"));
+  assert.equal(Object.hasOwn(exportEvents[0], "output_path"), false);
   assert.deepEqual(exportEvents[0].record_ids, [accepted.id]);
   assertJsonRpcOnlyStdout(probe);
 });
@@ -264,6 +437,15 @@ test("invalid MCP mutation arguments fail closed without filesystem side effects
         root: alternateRoot,
         memory: "Unsupported root argument must not redirect writes.",
         source: "mcp-mutations-test"
+      }
+    },
+    {
+      name: "mempr.propose",
+      args: {
+        confirm: true,
+        memory: "Invalid destination proposal must not be written.",
+        source: "mcp-mutations-test",
+        destination: "../outside-memory.md"
       }
     },
     {
@@ -413,7 +595,9 @@ async function proposeAccepted(root, memory) {
     "--memory",
     memory,
     "--source",
-    "package.json",
+    "manual",
+    "--source-trust",
+    "trusted",
     "--scope",
     "repo",
     "--destination",
@@ -487,6 +671,16 @@ function toolText(result) {
     .filter((item) => isRecord(item) && item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n");
+}
+
+function assertNoEcho(value, privateText) {
+  for (const text of privateText) {
+    assert.doesNotMatch(value, new RegExp(escapeRegExp(text)));
+  }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function assertMemoryRecord(value) {
@@ -736,20 +930,6 @@ class StdioMcpProbe {
   }
 
   async close() {
-    if (this.child.exitCode !== null || this.child.killed) {
-      return;
-    }
-
-    this.child.stdin.end();
-    await Promise.race([once(this.child, "exit"), delay(250)]);
-
-    if (this.child.exitCode === null && !this.child.killed) {
-      this.child.kill("SIGTERM");
-      await Promise.race([once(this.child, "exit"), delay(250)]);
-    }
-
-    if (this.child.exitCode === null && !this.child.killed) {
-      this.child.kill("SIGKILL");
-    }
+    await closeChildProcess(this.child);
   }
 }

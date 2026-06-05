@@ -1,0 +1,1 @@
+export const DEFAULT_EXPORT_DESTINATION = "MEMORY.md";

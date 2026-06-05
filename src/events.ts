@@ -1,7 +1,14 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { hashJson, withoutHashFields } from "./hash.js";
+import {
+  assertNoPersistentSecretLikeContent,
+  memoryRecordStringFields
+} from "./persistence-safety.js";
+import {
+  safeAppendStoreFile,
+  safeReadOptionalStoreFile
+} from "./store-paths.js";
 import type { MemoryRecord, MemoryStatus } from "./types.js";
 
 const EVENT_DIR = ".mempr";
@@ -15,6 +22,7 @@ export interface EventPaths {
 
 export type MemoryEvent =
   | MemoryProposedEvent
+  | MemoryProposalBlockedEvent
   | MemoryStatusChangedEvent
   | MemoryExportedEvent
   | LedgerMigratedEvent
@@ -38,6 +46,31 @@ export interface MemoryProposedEvent extends MemoryEventIntegrity {
   record: MemoryRecord;
 }
 
+export interface MemoryProposalBlockedEvent extends MemoryEventIntegrity {
+  id: string;
+  type: "memory_proposal_blocked";
+  created_at: string;
+  reason: string;
+  policy_version: string;
+  risk: "high";
+  decision: "block_no_persist";
+  scope: string;
+  scope_hash?: string;
+  scope_preview?: string;
+  destination: string;
+  destination_hash?: string;
+  destination_preview?: string;
+  source_type: string;
+  source_trust: string;
+  memory_hash: string;
+  memory_preview: string;
+  source_uri_hash?: string;
+  source_uri_preview?: string;
+  quote_hash?: string;
+  quote_preview?: string;
+  policy_config_hash?: string;
+}
+
 export interface MemoryStatusChangedEvent extends MemoryEventIntegrity {
   id: string;
   type: "memory_status_changed";
@@ -54,7 +87,6 @@ export interface MemoryExportedEvent extends MemoryEventIntegrity {
   type: "memory_exported";
   created_at: string;
   destination: string;
-  output_path: string;
   record_ids: string[];
 }
 
@@ -119,15 +151,19 @@ export async function appendEvent(
   event: MemoryEvent,
   root = process.cwd()
 ): Promise<void> {
+  assertNoPersistentSecretLikeContent(
+    memoryRecordStringFields(event),
+    "Memory event contains unsafe persistent content."
+  );
   const paths = resolveEventPaths(root);
-  const enriched = await withIntegrityMetadata(event, paths.eventFile);
-  await mkdir(paths.directory, { recursive: true });
-  await appendFile(paths.eventFile, `${JSON.stringify(enriched)}\n`);
+  const enriched = await withIntegrityMetadata(event, paths.root);
+  await safeAppendStoreFile(paths.root, EVENT_FILE, `${JSON.stringify(enriched)}\n`);
 }
 
 export async function readEvents(root = process.cwd()): Promise<MemoryEvent[]> {
   const paths = resolveEventPaths(root);
-  const content = await readOptional(paths.eventFile);
+  const file = await safeReadOptionalStoreFile(paths.root, EVENT_FILE);
+  const content = file.exists ? file.content : "";
 
   if (!content.trim()) {
     return [];
@@ -184,6 +220,10 @@ export function replayEvents(events: readonly MemoryEvent[]): MemoryRecord[] {
       }
 
       recordsById.set(event.record_id, event.record);
+      continue;
+    }
+
+    if (event.type === "memory_proposal_blocked") {
       continue;
     }
 
@@ -293,9 +333,9 @@ export function verifyEventIntegrity(events: readonly MemoryEvent[]): void {
 
 async function withIntegrityMetadata(
   event: MemoryEvent,
-  eventFile: string
+  root: string
 ): Promise<MemoryEvent> {
-  const previous_event_hash = await latestEventHash(eventFile);
+  const previous_event_hash = await latestEventHash(root);
   const enriched = addContentHashes({
     ...event,
     schema_version: event.schema_version ?? "mempr-event-v2",
@@ -330,8 +370,9 @@ function eventHash(event: MemoryEvent): string {
   return hashJson(withoutHashFields(event));
 }
 
-async function latestEventHash(eventFile: string): Promise<string | null> {
-  const content = await readOptional(eventFile);
+async function latestEventHash(root: string): Promise<string | null> {
+  const file = await safeReadOptionalStoreFile(root, EVENT_FILE);
+  const content = file.exists ? file.content : "";
 
   if (!content.trim()) {
     return null;
@@ -348,17 +389,5 @@ async function latestEventHash(eventFile: string): Promise<string | null> {
     return event.event_hash ?? null;
   } catch {
     throw new Error("Cannot append event because existing event history is malformed.");
-  }
-}
-
-async function readOptional(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return "";
-    }
-
-    throw error;
   }
 }

@@ -1,18 +1,33 @@
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import {
+  safeReadOptionalStoreFile
+} from "./store-paths.js";
 import { MEMORY_RISKS } from "./types.js";
 import type { MemoryRisk } from "./types.js";
 
-const POLICY_CONFIG_PATH = join(".mempr", "policy.json");
+const POLICY_CONFIG_FILE = "policy.json";
+const POLICY_CONFIG_PATH = ".mempr/policy.json";
 const POLICY_CONFIG_FIELDS = [
   "denyTerms",
   "sensitiveTerms",
   "autoAcceptScopes",
   "defaultRisk",
-  "ttlRisk"
+  "ttlRisk",
+  "autoAcceptRequiresTrustedSource",
+  "reviewUnknownSourceTrust",
+  "autoAcceptRequiresVerifiedSource"
 ] as const;
 
 export type PolicyConfigField = (typeof POLICY_CONFIG_FIELDS)[number];
+type PolicyStringListField = Extract<
+  PolicyConfigField,
+  "denyTerms" | "sensitiveTerms" | "autoAcceptScopes"
+>;
+type PolicyBooleanField = Extract<
+  PolicyConfigField,
+  | "autoAcceptRequiresTrustedSource"
+  | "reviewUnknownSourceTrust"
+  | "autoAcceptRequiresVerifiedSource"
+>;
 
 export interface PolicyConfig {
   denyTerms: string[];
@@ -20,6 +35,9 @@ export interface PolicyConfig {
   autoAcceptScopes: string[];
   defaultRisk: MemoryRisk;
   ttlRisk: MemoryRisk;
+  autoAcceptRequiresTrustedSource: boolean;
+  reviewUnknownSourceTrust: boolean;
+  autoAcceptRequiresVerifiedSource: boolean;
 }
 
 export interface PolicyConfigDefaults {
@@ -28,6 +46,9 @@ export interface PolicyConfigDefaults {
   readonly autoAcceptScopes: readonly string[];
   readonly defaultRisk: MemoryRisk;
   readonly ttlRisk: MemoryRisk;
+  readonly autoAcceptRequiresTrustedSource: boolean;
+  readonly reviewUnknownSourceTrust: boolean;
+  readonly autoAcceptRequiresVerifiedSource: boolean;
 }
 
 export type PolicyConfigInput = Partial<{
@@ -39,22 +60,15 @@ export const DEFAULT_POLICY_CONFIG: PolicyConfigDefaults = Object.freeze({
   sensitiveTerms: Object.freeze([]),
   autoAcceptScopes: Object.freeze(["repo", "project"]),
   defaultRisk: "medium",
-  ttlRisk: "medium"
+  ttlRisk: "medium",
+  autoAcceptRequiresTrustedSource: true,
+  reviewUnknownSourceTrust: true,
+  autoAcceptRequiresVerifiedSource: false
 });
 
 export async function loadPolicyConfig(root = process.cwd()): Promise<PolicyConfig> {
-  const path = join(resolve(root), POLICY_CONFIG_PATH);
-  let content: string;
-
-  try {
-    content = await readFile(path, "utf8");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return clonePolicyConfig(DEFAULT_POLICY_CONFIG);
-    }
-
-    throw error;
-  }
+  const file = await safeReadOptionalStoreFile(root, POLICY_CONFIG_FILE);
+  const content = file.exists ? file.content : "";
 
   if (!content.trim()) {
     return clonePolicyConfig(DEFAULT_POLICY_CONFIG);
@@ -76,22 +90,38 @@ export function normalizePolicyConfig(value: unknown): PolicyConfig {
     throw policyConfigError("$", "expected an object");
   }
 
-  const hasUnknownField = Object.keys(value).some((field) => !isPolicyConfigField(field));
+  const hasUnknownField = Object.keys(value).some((field) => {
+    return !isPolicyConfigField(field) && !isLegacyPolicyConfigField(field);
+  });
 
   if (hasUnknownField) {
     throw policyConfigError("$", "unknown field");
   }
+
+  normalizeLegacySecretBlockingConfig(value.blockSecretsWithoutPersistence);
 
   return {
     denyTerms: normalizeStringList(value.denyTerms, "denyTerms"),
     sensitiveTerms: normalizeStringList(value.sensitiveTerms, "sensitiveTerms"),
     autoAcceptScopes: normalizeStringList(value.autoAcceptScopes, "autoAcceptScopes"),
     defaultRisk: normalizeRisk(value.defaultRisk, "defaultRisk"),
-    ttlRisk: normalizeRisk(value.ttlRisk, "ttlRisk")
+    ttlRisk: normalizeRisk(value.ttlRisk, "ttlRisk"),
+    autoAcceptRequiresTrustedSource: normalizeBoolean(
+      value.autoAcceptRequiresTrustedSource,
+      "autoAcceptRequiresTrustedSource"
+    ),
+    reviewUnknownSourceTrust: normalizeBoolean(
+      value.reviewUnknownSourceTrust,
+      "reviewUnknownSourceTrust"
+    ),
+    autoAcceptRequiresVerifiedSource: normalizeBoolean(
+      value.autoAcceptRequiresVerifiedSource,
+      "autoAcceptRequiresVerifiedSource"
+    )
   };
 }
 
-function normalizeStringList(value: unknown, path: PolicyConfigField): string[] {
+function normalizeStringList(value: unknown, path: PolicyStringListField): string[] {
   if (value === undefined) {
     return [...DEFAULT_POLICY_CONFIG[path]];
   }
@@ -129,13 +159,46 @@ function normalizeRisk(value: unknown, path: "defaultRisk" | "ttlRisk"): MemoryR
   throw policyConfigError(path, "expected one of low, medium, high");
 }
 
+function normalizeBoolean(
+  value: unknown,
+  path: PolicyBooleanField
+): boolean {
+  if (value === undefined) {
+    return DEFAULT_POLICY_CONFIG[path];
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  throw policyConfigError(path, "expected a boolean");
+}
+
+function normalizeLegacySecretBlockingConfig(value: unknown): void {
+  if (value === undefined || value === true) {
+    return;
+  }
+
+  if (value === false) {
+    throw policyConfigError(
+      "blockSecretsWithoutPersistence",
+      "built-in secret blocking cannot be disabled"
+    );
+  }
+
+  throw policyConfigError("blockSecretsWithoutPersistence", "expected true");
+}
+
 function clonePolicyConfig(config: PolicyConfigDefaults): PolicyConfig {
   return {
     denyTerms: [...config.denyTerms],
     sensitiveTerms: [...config.sensitiveTerms],
     autoAcceptScopes: [...config.autoAcceptScopes],
     defaultRisk: config.defaultRisk,
-    ttlRisk: config.ttlRisk
+    ttlRisk: config.ttlRisk,
+    autoAcceptRequiresTrustedSource: config.autoAcceptRequiresTrustedSource,
+    reviewUnknownSourceTrust: config.reviewUnknownSourceTrust,
+    autoAcceptRequiresVerifiedSource: config.autoAcceptRequiresVerifiedSource
   };
 }
 
@@ -154,6 +217,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isPolicyConfigField(value: string): value is PolicyConfigField {
   return POLICY_CONFIG_FIELDS.includes(value as PolicyConfigField);
+}
+
+function isLegacyPolicyConfigField(value: string): boolean {
+  return value === "blockSecretsWithoutPersistence";
 }
 
 function isOneOf<const T extends readonly string[]>(values: T, value: unknown): value is T[number] {
