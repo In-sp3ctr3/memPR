@@ -69,7 +69,7 @@ Current package metadata is local-first release `1.0.0`.
 Install from npm:
 
 ```bash
-npm install -g mempr
+npm install -g @in-sp3ctr3/mempr
 ```
 
 Install with Homebrew:
@@ -225,11 +225,11 @@ import {
   exportMarkdown,
   assembleReadContext,
   scanPersistentFields
-} from "mempr";
+} from "@in-sp3ctr3/mempr";
 ```
 
-Avoid deep imports from `dist/`; only package-root exports and `mempr/mcp` are
-part of the supported package boundary.
+Avoid deep imports from `dist/`; only package-root exports and
+`@in-sp3ctr3/mempr/mcp` are part of the supported package boundary.
 
 ## Documentation
 

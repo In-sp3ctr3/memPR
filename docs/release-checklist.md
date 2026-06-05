@@ -68,13 +68,15 @@ dirty working tree.
 - Publish npm packages from a clean checkout after `npm run release:check`:
 
   ```bash
-  npm publish
+  npm publish --access public
   ```
 
-  If the npm account requires two-factor authentication, pass the current OTP:
+  If npm requires an interactive passkey challenge, run from a TTY and approve
+  the browser prompt. If using an authenticator code instead, pass the current
+  OTP:
 
   ```bash
-  npm publish --otp <code>
+  npm publish --access public --otp <code>
   ```
 
 - The Homebrew tap formula must point at the GitHub release `mempr-*.tgz`
@@ -84,7 +86,7 @@ dirty working tree.
 - After publishing, smoke test each public channel:
 
   ```bash
-  npm view mempr version dist.tarball integrity --json
+  npm view @in-sp3ctr3/mempr version dist.tarball integrity --json
   brew install In-sp3ctr3/tap/mempr
   docker run --rm -d --name mempr-smoke ghcr.io/in-sp3ctr3/mempr:1.0.0
   docker logs mempr-smoke 2>&1 | grep "mempr-mcp-http listening"
