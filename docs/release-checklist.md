@@ -63,6 +63,34 @@ npm run archive:source
 empty, so the archive is generated from committed hardened code rather than a
 dirty working tree.
 
+## Distribution
+
+- Publish npm packages from a clean checkout after `npm run release:check`:
+
+  ```bash
+  npm publish
+  ```
+
+  If the npm account requires two-factor authentication, pass the current OTP:
+
+  ```bash
+  npm publish --otp <code>
+  ```
+
+- The Homebrew tap formula must point at the GitHub release `mempr-*.tgz`
+  artifact and use the matching SHA-256 digest.
+- The OCI image is published to GitHub Container Registry as
+  `ghcr.io/in-sp3ctr3/mempr:<version>` from release tags.
+- After publishing, smoke test each public channel:
+
+  ```bash
+  npm view mempr version dist.tarball integrity --json
+  brew install In-sp3ctr3/tap/mempr
+  docker run --rm -d --name mempr-smoke ghcr.io/in-sp3ctr3/mempr:1.0.0
+  docker logs mempr-smoke 2>&1 | grep "mempr-mcp-http listening"
+  docker rm -f mempr-smoke
+  ```
+
 ## Security Checklist
 
 - Denied read-policy responses must not return memory text, source quotes, hidden
