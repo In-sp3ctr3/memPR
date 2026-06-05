@@ -45,6 +45,14 @@ not canonical decisions.
 | [0033](0033-r6-r7-diagnostics-and-scanning.md) | R6-R7 diagnostics and accepted-memory scanning | Accepted | Adds separate redacted diagnostics, support bundles, correlation IDs, accepted-memory secret blockers, sensitive warnings, and marker recognition without safety/redaction claims | Diagnostics fields, retention, scanner patterns, warning/block behavior, redaction semantics, or content-leak boundaries change |
 | [0034](0034-r10-self-hosted-mcp-http.md) | R10 self-hosted MCP HTTP transport | Accepted | Adds `mempr-mcp-http`, protected-resource metadata, Bearer token/audience/scope checks, Origin/Host defenses, Accept validation, and rate limiting for self-hosted Streamable HTTP MCP | HTTP auth, OAuth metadata, scopes, transport behavior, origin/host policy, rate limits, or hosted claims change |
 | [0035](0035-r11-local-first-1-0-release.md) | R11 local-first 1.0 release | Accepted | Freezes the local-first 1.0 release boundary with package smoke tests, migration guide, security checklist, deprecation policy, and no compliance-grade claims | Package bins/version, release checklist, migration guide, compatibility policy, deprecation policy, or public claim boundary changes |
+| [0036](0036-live-adapter-compatibility-and-rollback.md) | Live adapter compatibility and rollback posture | Proposed | Defines provider contract profiles, payload compatibility, rollback posture, and third-party store claim boundaries for future R9 hardening | Provider payloads, metadata fields, idempotency, downstream IDs, retry/error mapping, rollback, credential handling, or third-party store claims change |
+| [0037](0037-scanner-configuration-and-redaction-policy.md) | Scanner configuration and redaction policy | Proposed | Defines local scanner policy configuration and keeps automatic redaction as reviewed proposals rather than silent mutation | Scanner policy schema, blocker/warning precedence, redaction marker semantics, automatic redaction, or safety/redaction claims change |
+| [0038](0038-diagnostics-retention-and-audit-log-boundary.md) | Diagnostics retention and audit log boundary | Proposed | Defines local diagnostics retention controls while keeping diagnostics, domain events, and logs separate from compliance audit claims | Diagnostics schema, pruning, retention config, support bundle export, operational logging, or audit/legal-retention wording changes |
+| [0039](0039-reviewer-identity-and-multi-user-approval.md) | Reviewer identity and multi-user approval workflow | Proposed | Defines local reviewer identities, approval policy, signed approval events, and separation from read principals and hosted users | Reviewer registry, approval policy, quorum, signed review evidence, hosted identity, organization roles, or non-repudiation claims change |
+| [0040](0040-hosted-service-deployment-boundary.md) | Hosted service deployment boundary | Proposed | Defines hosted SaaS as a product-scope change distinct from self-hosted MCP HTTP and names required identity, tenant, retention, and operations decisions | Hosted endpoint, tenant storage, account/session/org model, remote sync, hosted admin UI, support operations, or hosted security claims change |
+| [0041](0041-retrieval-ranking-vector-search-and-knowledge-graph.md) | Retrieval ranking, vector search, and knowledge graphs | Proposed | Keeps native retrieval/vector/graph features outside the local-first boundary and allows adapter-facing retrieval metadata before internal indexes | Embeddings, vector indexes, semantic search, ranking, graph traversal, destination-group reads, or retrieval quality claims change |
+| [0042](0042-model-assisted-memory-classification.md) | Model-assisted memory classification | Proposed | Defines model-assisted classification as opt-in advisory metadata that cannot override deterministic policy or blockers | Model calls, provider defaults, advisory evidence, model-driven risk/scope/redaction, prompt/completion storage, or safety/compliance claims change |
+| [0043](0043-compliance-and-legal-retention-boundary.md) | Compliance and legal retention boundary | Proposed | Keeps compliance-grade audit and legal retention claims out of scope while allowing future compliance-ready controls with legal/product signoff | Retention metadata, legal hold, deletion/preflight behavior, signatures, non-repudiation, immutable storage, or regulated-data claims change |
 
 ## ADR Rules
 
@@ -59,12 +67,10 @@ not canonical decisions.
 R1-R11 are accepted for the local-first 1.0 boundary. Future ADRs should now be
 opened for concrete changes rather than extending Phase 7 alphabetically.
 
-Follow-up hardening that stays within the local-first product boundary includes
-provider-specific adapter payload compatibility, richer policy language,
-automatic redaction design, hosted security review before any hosted deployment,
-and additional Node/runtime compatibility matrices.
+Follow-up hardening that stays within the local-first product boundary is now
+tracked by proposed ADRs for live adapter compatibility, scanner configuration,
+diagnostics retention, reviewer identity, and model-assisted classification.
 
-Scope-change ADRs are required before retrieval ranking, vector search,
-embeddings, knowledge graphs, hosted service, multi-user approvals,
-model-assisted classification, third-party store security claims, or
-compliance-grade audit/retention guarantees.
+Scope-change ADRs are now proposed for hosted service, retrieval ranking, vector
+search, embeddings, knowledge graphs, and compliance/legal-retention
+guarantees. These proposals are planning gates, not shipped behavior.
